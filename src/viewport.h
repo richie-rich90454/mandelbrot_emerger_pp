@@ -2,12 +2,20 @@
 #define VIEWPORT_H
 #include <iosfwd>
 const int RES=2;
+struct ViewportBounds{
+    double xi;
+    double xf;
+    double yi;
+    double yf;
+};
 class Viewport{
 public:
     Viewport(int cssWidth, int cssHeight);
     void beginZoom(double deviceX, double deviceY);
-    void completeZoom(double secondDeviceX, double secondDeviceY);
-    void autoZoom(double centerX, double centerY, double divisor);
+    ViewportBounds completeZoom(double secondDeviceX, double secondDeviceY);
+    ViewportBounds planAutoZoom(double centerX, double centerY, double divisor) const;
+    void setBounds(const ViewportBounds& bounds);
+    ViewportBounds getBounds() const;
     void resetToInitial();
     double getXi() const;
     double getXf() const;
