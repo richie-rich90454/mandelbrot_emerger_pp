@@ -19,30 +19,56 @@ void Viewport::beginZoom(double deviceX, double deviceY){
     selectionPending=true;
 }
 // the original computes boundXfn from the second click but never uses it; width derives from the clicked height span
-void Viewport::completeZoom(double secondDeviceX, double secondDeviceY){
+ViewportBounds Viewport::completeZoom(double secondDeviceX, double secondDeviceY){
     (void)secondDeviceX;
-    double newYi=planeFromDeviceY(secondDeviceY);
-    double newXf=pendingPlaneX+(pendingPlaneY-newYi)*aspectRatio;
-    boundXi=pendingPlaneX;
-    boundXf=newXf;
-    boundYi=newYi;
-    boundYf=pendingPlaneY;
+    ViewportBounds target;
+    target.yi=planeFromDeviceY(secondDeviceY);
+    target.xi=pendingPlaneX;
+    target.xf=pendingPlaneX+(pendingPlaneY-target.yi)*aspectRatio;
+    target.yf=pendingPlaneY;
     selectionPending=false;
+    return target;
 }
 // centered rect with the same aspect relation as the original: width derives from height span
-void Viewport::autoZoom(double centerX, double centerY, double divisor){
+ViewportBounds Viewport::planAutoZoom(double centerX, double centerY, double divisor) const{
+    ViewportBounds target;
     double heightSpan=(boundYf-boundYi)/divisor;
     double widthSpan=heightSpan*aspectRatio;
     if(!(widthSpan>0.0) || !std::isfinite(widthSpan)){
+        target.xi=boundXi;
+        target.xf=boundXf;
+        target.yi=boundYi;
+        target.yf=boundYf;
+        return target;
+    }
+    target.xi=centerX-widthSpan*0.5;
+    target.xf=centerX+widthSpan*0.5;
+    target.yi=centerY-heightSpan*0.5;
+    target.yf=centerY+heightSpan*0.5;
+    return target;
+}
+void Viewport::setBounds(const ViewportBounds& bounds){
+    if(!std::isfinite(bounds.xi) || !std::isfinite(bounds.xf) || !std::isfinite(bounds.yi) || !std::isfinite(bounds.yf)){
         return;
     }
-    boundXi=centerX-widthSpan*0.5;
-    boundXf=centerX+widthSpan*0.5;
-    boundYi=centerY-heightSpan*0.5;
-    boundYf=centerY+heightSpan*0.5;
+    if(!(bounds.xf>bounds.xi) || !(bounds.yf>bounds.yi)){
+        return;
+    }
+    boundXi=bounds.xi;
+    boundXf=bounds.xf;
+    boundYi=bounds.yi;
+    boundYf=bounds.yf;
     selectionPending=false;
     pendingPlaneX=0.0;
     pendingPlaneY=0.0;
+}
+ViewportBounds Viewport::getBounds() const{
+    ViewportBounds bounds;
+    bounds.xi=boundXi;
+    bounds.xf=boundXf;
+    bounds.yi=boundYi;
+    bounds.yf=boundYf;
+    return bounds;
 }
 void Viewport::resetToInitial(){
     initializeBounds();
