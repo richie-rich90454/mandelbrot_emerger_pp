@@ -3,6 +3,7 @@
 #include "png_writer.h"
 #include <SDL3/SDL.h>
 #include <cmath>
+#include <cstring>
 #include <ctime>
 #include <iostream>
 namespace{
@@ -15,15 +16,13 @@ namespace{
     const double ZOOM_OUT_FACTOR=2.0;
     const long long MAX_STEPS_PER_RENDER=4096ll;
     const unsigned long long FRAME_BUDGET_MS=14ull;
-    const unsigned long long FLIGHT_STAGE_MS=220ull;
-    const double FLIGHT_MAX_STAGE_FACTOR=1.35;
-    const int FLIGHT_MAX_STAGES=18;
+    const unsigned long long ANIMATION_MS=2500ull;
+    const double CROSSFADE_START=0.75;
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),flying(false),flightIndex(0),startTicks(0),lastReframeTicks(0),flightNextStageTicks(0),consumedTicks(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),animationMode(0),pendingApplied(false),startTicks(0),lastReframeTicks(0),animationStartTicks(0),consumedTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
-    flightKeys.reserve(FLIGHT_MAX_STAGES+1);
 }
 Application::~Application(){
     for(int i=0; i<3; i++){
@@ -31,6 +30,9 @@ Application::~Application(){
     }
     if(texture!=nullptr){
         SDL_DestroyTexture(texture);
+    }
+    if(flightTexture!=nullptr){
+        SDL_DestroyTexture(flightTexture);
     }
     if(renderer!=nullptr){
         SDL_DestroyRenderer(renderer);
@@ -56,6 +58,12 @@ bool Application::initialize(){
         std::cerr<<"SDL_CreateTexture failed: "<<SDL_GetError()<<std::endl;
         return false;
     }
+    flightBuffer.resize(static_cast<std::size_t>(simulation.getBuffer().getWidth())*static_cast<std::size_t>(simulation.getBuffer().getHeight())*4u);
+    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, simulation.getBuffer().getWidth(), simulation.getBuffer().getHeight());
+    if(flightTexture==nullptr){
+        std::cerr<<"SDL_CreateTexture(flight) failed: "<<SDL_GetError()<<std::endl;
+        return false;
+    }
     return true;
 }
 void Application::run(){
@@ -68,7 +76,6 @@ void Application::run(){
     while(running){
         processEvents();
         render();
-        maybeAdvanceFlight();
         maybeAutoZoom();
     }
 }
@@ -104,10 +111,22 @@ void Application::render(){
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     SDL_FRect destination={dstX, dstY, dstW, dstH};
-    SDL_RenderTexture(renderer, texture, nullptr, &destination);
+    if(animating && animationMode==1){
+        drawDive(destination);
+    }
+    else if(animating && animationMode==2){
+        drawFade(destination);
+    }
+    else{
+        SDL_SetTextureAlphaMod(texture, 255);
+        SDL_RenderTexture(renderer, texture, nullptr, &destination);
+    }
     SDL_RenderPresent(renderer);
 }
 void Application::onMouseButtonDown(const SDL_Event& event){
+    if(animating){
+        return;
+    }
     if(autoZoomEnabled){
         autoZoomEnabled=false;
         std::cout<<"[auto] disengaged (manual control)"<<std::endl;
@@ -122,7 +141,7 @@ void Application::onMouseButtonDown(const SDL_Event& event){
     }
     else{
         clicker=false;
-        beginFlight(viewport.completeZoom(deviceX, deviceY));
+        beginTransition(viewport.completeZoom(deviceX, deviceY));
     }
 }
 void Application::onKeyDown(const SDL_Event& event){
@@ -156,7 +175,7 @@ void Application::toggleAutoZoom(){
 }
 // probes random points in the current bounds and steers toward slow escapers, which hug the filament structure; the precision floor restarts full view so generation cycles forever
 void Application::maybeAutoZoom(){
-    if(!autoZoomEnabled || clicker || flying){
+    if(!autoZoomEnabled || clicker || animating){
         return;
     }
     if(SDL_GetTicks()-lastReframeTicks<AUTO_ZOOM_INTERVAL_MS){
@@ -216,10 +235,14 @@ void Application::performAutoZoom(){
             std::cout<<"[auto] no structure nearby - zooming out"<<std::endl;
         }
     }
-    beginFlight(target);
+    beginTransition(target);
 }
-// the flight walks keyframed bounds whose span changes by a gentle constant factor per stage, reframing in place each stage so emergence chases the camera without allocating anything
-void Application::beginFlight(const ViewportBounds& target){
+// dives glide a magnifying crop across the pre-zoom frame while the live field resolves at the destination, with one reframe total and no simulation resets mid-flight; pull-backs cross through black since nothing beyond the current view is computable
+void Application::beginTransition(const ViewportBounds& target){
+    if(animating){
+        animating=false;
+        SDL_SetTextureAlphaMod(texture, 255);
+    }
     ViewportBounds from=viewport.getBounds();
     double fromSpan=from.yf-from.yi;
     double toSpan=target.yf-target.yi;
@@ -228,65 +251,96 @@ void Application::beginFlight(const ViewportBounds& target){
         simulation.reframe(viewport);
         viewport.log(std::cout);
         lastReframeTicks=SDL_GetTicks();
-        flying=false;
         return;
     }
-    flightKeys.clear();
-    double cx0=(from.xi+from.xf)*0.5;
-    double cy0=(from.yi+from.yf)*0.5;
-    double cx1=(target.xi+target.xf)*0.5;
-    double cy1=(target.yi+target.yf)*0.5;
+    animationStartTicks=SDL_GetTicks();
+    pendingTarget=target;
+    pendingApplied=false;
+    if(toSpan<fromSpan*0.999){
+        std::memcpy(flightBuffer.data(), simulation.getBuffer().data(), flightBuffer.size());
+        SDL_UpdateTexture(flightTexture, nullptr, flightBuffer.data(), simulation.getBuffer().getWidth()*4);
+        animFrom=from;
+        animationMode=1;
+        animating=true;
+        viewport.setBounds(target);
+        simulation.reframe(viewport);
+        viewport.log(std::cout);
+        lastReframeTicks=SDL_GetTicks();
+    }
+    else if(toSpan>fromSpan*1.001){
+        animationMode=2;
+        animating=true;
+    }
+    else{
+        viewport.setBounds(target);
+        simulation.reframe(viewport);
+        viewport.log(std::cout);
+        lastReframeTicks=SDL_GetTicks();
+    }
+}
+void Application::drawDive(const SDL_FRect& destination){
+    double t=(SDL_GetTicks()-animationStartTicks)/(double)ANIMATION_MS;
+    if(t>=1.0 || !animating){
+        animating=false;
+        SDL_SetTextureAlphaMod(texture, 255);
+        SDL_RenderTexture(renderer, texture, nullptr, &destination);
+        return;
+    }
+    double e=t*t*(3.0-2.0*t);
+    double fromSpan=animFrom.yf-animFrom.yi;
+    double fromCx=(animFrom.xi+animFrom.xf)*0.5;
+    double fromCy=(animFrom.yi+animFrom.yf)*0.5;
+    ViewportBounds to=viewport.getBounds();
+    double toSpan=to.yf-to.yi;
+    double span=std::exp((1.0-e)*std::log(fromSpan)+e*std::log(toSpan));
+    double cx=(1.0-e)*fromCx+e*(to.xi+(to.xf-to.xi)*0.5);
+    double cy=(1.0-e)*fromCy+e*(to.yi+(to.yf-to.yi)*0.5);
     double aspectRatio=static_cast<double>(windowWidth)/static_cast<double>(windowHeight);
-    int stages=1;
-    if(fromSpan>toSpan){
-        stages=static_cast<int>(std::ceil(std::log(fromSpan/toSpan)/std::log(FLIGHT_MAX_STAGE_FACTOR)));
+    double w=span*aspectRatio;
+    float texW=static_cast<float>(simulation.getBuffer().getWidth());
+    float texH=static_cast<float>(simulation.getBuffer().getHeight());
+    SDL_FRect src;
+    src.x=texW*static_cast<float>((cx-w*0.5-animFrom.xi)/(animFrom.xf-animFrom.xi));
+    src.y=texH*static_cast<float>((animFrom.yf-(cy+span*0.5))/fromSpan);
+    src.w=texW*static_cast<float>(w/(animFrom.xf-animFrom.xi));
+    src.h=texH*static_cast<float>(span/fromSpan);
+    if(src.x<0.0f){
+        src.x=0.0f;
     }
-    else if(toSpan>fromSpan){
-        stages=static_cast<int>(std::ceil(std::log(toSpan/fromSpan)/std::log(FLIGHT_MAX_STAGE_FACTOR)));
+    if(src.y<0.0f){
+        src.y=0.0f;
     }
-    if(stages<1){
-        stages=1;
+    if(src.x+src.w>texW){
+        src.w=texW-src.x;
     }
-    if(stages>FLIGHT_MAX_STAGES){
-        stages=FLIGHT_MAX_STAGES;
+    if(src.y+src.h>texH){
+        src.h=texH-src.y;
     }
-    for(int s=1; s<stages; s++){
-        double t=static_cast<double>(s)/static_cast<double>(stages);
-        double h=fromSpan*std::pow(toSpan/fromSpan, t);
-        double w=h*aspectRatio;
-        ViewportBounds key;
-        key.xi=(cx0+(cx1-cx0)*t)-w*0.5;
-        key.xf=(cx0+(cx1-cx0)*t)+w*0.5;
-        key.yi=(cy0+(cy1-cy0)*t)-h*0.5;
-        key.yf=(cy0+(cy1-cy0)*t)+h*0.5;
-        flightKeys.push_back(key);
+    SDL_RenderTexture(renderer, flightTexture, &src, &destination);
+    if(e>CROSSFADE_START){
+        double fade=(e-CROSSFADE_START)/(1.0-CROSSFADE_START);
+        SDL_SetTextureAlphaMod(texture, static_cast<Uint8>(fade*255.0));
+        SDL_RenderTexture(renderer, texture, nullptr, &destination);
     }
-    flightKeys.push_back(target);
-    flightIndex=0;
-    flying=true;
-    applyFlightStage();
 }
-void Application::applyFlightStage(){
-    viewport.setBounds(flightKeys[flightIndex]);
-    simulation.reframe(viewport);
-    viewport.log(std::cout);
-    lastReframeTicks=SDL_GetTicks();
-    flightNextStageTicks=lastReframeTicks+FLIGHT_STAGE_MS;
-}
-void Application::maybeAdvanceFlight(){
-    if(!flying){
+void Application::drawFade(const SDL_FRect& destination){
+    double t=(SDL_GetTicks()-animationStartTicks)/(double)ANIMATION_MS;
+    if(!pendingApplied && t>=0.5){
+        viewport.setBounds(pendingTarget);
+        simulation.reframe(viewport);
+        viewport.log(std::cout);
+        lastReframeTicks=SDL_GetTicks();
+        pendingApplied=true;
+    }
+    if(t>=1.0 || !animating){
+        animating=false;
+        SDL_SetTextureAlphaMod(texture, 255);
+        SDL_RenderTexture(renderer, texture, nullptr, &destination);
         return;
     }
-    if(SDL_GetTicks()<flightNextStageTicks){
-        return;
-    }
-    flightIndex++;
-    if(flightIndex>=static_cast<int>(flightKeys.size())){
-        flying=false;
-        flightKeys.clear();
-        return;
-    }
-    applyFlightStage();
+    double alpha=(t<0.5)?(1.0-t/0.5):((t-0.5)/0.5);
+    SDL_SetTextureAlphaMod(texture, static_cast<Uint8>(alpha*255.0));
+    SDL_RenderTexture(renderer, texture, nullptr, &destination);
 }
 void Application::toggleFullscreen(){
     fullscreen=!fullscreen;
