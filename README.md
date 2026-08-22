@@ -10,7 +10,7 @@ Most Mandelbrot viewers use a fixed `MAX_ITERATIONS` cap and lose integrity when
 |---|---|
 | Mouse click x2 (corners) | Zoom into rectangle (disengages autopilot) |
 | `A` | Toggle autopilot: probes the current view for filament points and zooms into them every few seconds, cycling forever |
-| `C` | Cycle color scheme (grayscale / thermal / alpha) |
+| `C` | Cycle color scheme (grayscale / thermal / alpha / rainbow / fire / ice) |
 | `Enter` | Save screenshot to `mandelbrot_<timestamp>.png` |
 | `F11` | Toggle fullscreen / windowed |
 | `Esc` | Quit |
