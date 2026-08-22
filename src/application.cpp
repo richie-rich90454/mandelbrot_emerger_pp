@@ -9,10 +9,14 @@ namespace{
     const unsigned long long AUTO_ZOOM_INTERVAL_MS=6000ull;
     const int PROBE_SAMPLES=256;
     const int PROBE_MAX_ITER=512;
+    const int PROBE_MIN_TARGET_ITER=16;
     const double AUTO_ZOOM_DIVISOR=3.0;
     const double AUTO_ZOOM_MIN_SPAN=1e-11;
+    const double ZOOM_OUT_FACTOR=2.0;
+    const long long MAX_STEPS_PER_RENDER=4096ll;
+    const unsigned long long FRAME_BUDGET_MS=14ull;
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),startTicks(0),lastReframeTicks(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),startTicks(0),lastReframeTicks(0),consumedTicks(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
@@ -83,12 +87,14 @@ void Application::processEvents(){
 }
 void Application::render(){
     computeDestinationRect();
-    // the fade clock runs at a virtual 60Hz like p5's frameRate(60) so escape brightness keeps its browser wall-clock timeline while iteration stays uncapped
-    long long frameIndex=static_cast<long long>((SDL_GetTicks()-startTicks))*60LL/1000LL;
-    if(frameIndex<1){
-        frameIndex=1;
+    // lockstep passes run under a per-frame time budget: iteration speed becomes whatever the CPU sustains, decoupled from vsync, and escape records share the same counter so fade ratios stay consistent
+    unsigned long long frameStart=SDL_GetTicks();
+    long long stepsDone=0;
+    while(stepsDone<MAX_STEPS_PER_RENDER && (stepsDone==0 || SDL_GetTicks()-frameStart<FRAME_BUDGET_MS)){
+        simulation.step(consumedTicks+1, schemes[activeScheme]);
+        consumedTicks++;
+        stepsDone++;
     }
-    simulation.step(frameIndex, schemes[activeScheme]);
     SDL_UpdateTexture(texture, nullptr, simulation.getBuffer().data(), simulation.getBuffer().getWidth()*4);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
@@ -182,12 +188,24 @@ void Application::performAutoZoom(){
         }
     }
     double ySpan=std::fabs(viewport.getYf()-viewport.getYi());
+    double outerLimit=(2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth))*64.0;
     if(!(ySpan>=AUTO_ZOOM_MIN_SPAN) || ySpan/AUTO_ZOOM_DIVISOR<AUTO_ZOOM_MIN_SPAN){
         viewport.resetToInitial();
         std::cout<<"[auto] precision floor reached - restarting cycle"<<std::endl;
     }
-    else{
+    else if(bestScore>=PROBE_MIN_TARGET_ITER){
         viewport.autoZoom(bestX, bestY, AUTO_ZOOM_DIVISOR);
+    }
+    else{
+        // no candidate escaped slowly enough to promise structure: pull back out instead of diving into interior or exterior dead zones
+        if(ySpan>=outerLimit){
+            viewport.resetToInitial();
+            std::cout<<"[auto] empty region - restarting cycle"<<std::endl;
+        }
+        else{
+            viewport.autoZoom((viewport.getXi()+viewport.getXf())*0.5, (viewport.getYi()+viewport.getYf())*0.5, 1.0/ZOOM_OUT_FACTOR);
+            std::cout<<"[auto] no structure nearby - zooming out"<<std::endl;
+        }
     }
     simulation.reframe(viewport);
     viewport.log(std::cout);
