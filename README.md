@@ -8,7 +8,8 @@ Most Mandelbrot viewers use a fixed `MAX_ITERATIONS` cap and lose integrity when
 
 | Input | Action |
 |---|---|
-| Mouse click x2 (corners) | Zoom into rectangle |
+| Mouse click x2 (corners) | Zoom into rectangle (disengages autopilot) |
+| `A` | Toggle autopilot: probes the current view for filament points and zooms into them every few seconds, cycling forever |
 | `C` | Cycle color scheme (grayscale / thermal / alpha) |
 | `Enter` | Save screenshot to `mandelbrot_<timestamp>.png` |
 | `F11` | Toggle fullscreen / windowed |
@@ -31,6 +32,7 @@ Produces a statically linked executable with no runtime DLL dependencies.
 - The escape-brightness fade (`escapeFrame/frameCount`) runs on a virtual 60 Hz clock matching p5.js' `frameRate(60)`, while iteration itself is uncapped and multithreaded across all cores - identical visuals, faster convergence.
 - Iteration math uses IEEE doubles, exactly like JavaScript numbers, so point trajectories are bit-for-bit identical to the original.
 - Screenshots are written by a dependency-free PNG encoder (stored deflate blocks).
+- Autopilot probes 256 random plane points per hop, iterates each up to 512 times, and centers the next zoom on the slowest escaper - a proxy for filament proximity - so it endlessly follows branch structure. When the view span approaches double-precision limits it restarts from full view, making generation truly infinite.
 
 ## License
 
