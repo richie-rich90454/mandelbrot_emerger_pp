@@ -1,6 +1,7 @@
 #ifndef APPLICATION_H
 #define APPLICATION_H
 #include <random>
+#include <vector>
 #include "viewport.h"
 #include "simulation.h"
 struct SDL_Window;
@@ -24,6 +25,9 @@ private:
     void toggleAutoZoom();
     void maybeAutoZoom();
     void performAutoZoom();
+    void beginFlight(const ViewportBounds& target);
+    void applyFlightStage();
+    void maybeAdvanceFlight();
     void saveScreenshot();
     void computeDestinationRect();
     SDL_Window* window;
@@ -37,9 +41,13 @@ private:
     bool running;
     bool fullscreen;
     bool autoZoomEnabled;
+    bool flying;
+    int flightIndex;
     unsigned long long startTicks;
     unsigned long long lastReframeTicks;
+    unsigned long long flightNextStageTicks;
     long long consumedTicks;
+    std::vector<ViewportBounds> flightKeys;
     std::mt19937 randomEngine;
     int windowWidth;
     int windowHeight;
