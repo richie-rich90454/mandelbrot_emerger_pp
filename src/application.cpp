@@ -5,7 +5,14 @@
 #include <cmath>
 #include <ctime>
 #include <iostream>
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),startTicks(0),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+namespace{
+    const unsigned long long AUTO_ZOOM_INTERVAL_MS=6000ull;
+    const int PROBE_SAMPLES=256;
+    const int PROBE_MAX_ITER=512;
+    const double AUTO_ZOOM_DIVISOR=3.0;
+    const double AUTO_ZOOM_MIN_SPAN=1e-11;
+}
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),startTicks(0),lastReframeTicks(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
@@ -46,11 +53,14 @@ bool Application::initialize(){
 void Application::run(){
     running=true;
     startTicks=SDL_GetTicks();
+    lastReframeTicks=startTicks;
     simulation.reframe(viewport);
     viewport.log(std::cout);
+    std::cout<<"[auto] engaged (press A to toggle, click to take manual control)"<<std::endl;
     while(running){
         processEvents();
         render();
+        maybeAutoZoom();
     }
 }
 void Application::processEvents(){
@@ -87,6 +97,10 @@ void Application::render(){
     SDL_RenderPresent(renderer);
 }
 void Application::onMouseButtonDown(const SDL_Event& event){
+    if(autoZoomEnabled){
+        autoZoomEnabled=false;
+        std::cout<<"[auto] disengaged (manual control)"<<std::endl;
+    }
     float mouseX=event.button.x;
     float mouseY=event.button.y;
     double deviceX=static_cast<double>((mouseX-dstX)/scale);
@@ -100,6 +114,7 @@ void Application::onMouseButtonDown(const SDL_Event& event){
         clicker=false;
         simulation.reframe(viewport);
         viewport.log(std::cout);
+        lastReframeTicks=SDL_GetTicks();
     }
 }
 void Application::onKeyDown(const SDL_Event& event){
@@ -113,6 +128,9 @@ void Application::onKeyDown(const SDL_Event& event){
         case SDLK_F11:
             toggleFullscreen();
             break;
+        case SDLK_A:
+            toggleAutoZoom();
+            break;
         case SDLK_ESCAPE:
             running=false;
             break;
@@ -122,6 +140,58 @@ void Application::onKeyDown(const SDL_Event& event){
 }
 void Application::cycleColorScheme(){
     activeScheme=(activeScheme+1)%3;
+}
+void Application::toggleAutoZoom(){
+    autoZoomEnabled=!autoZoomEnabled;
+    lastReframeTicks=SDL_GetTicks();
+    std::cout<<"[auto] "<<(autoZoomEnabled?"engaged":"disengaged")<<std::endl;
+}
+// probes random points in the current bounds and steers toward slow escapers, which hug the filament structure; the precision floor restarts full view so generation cycles forever
+void Application::maybeAutoZoom(){
+    if(!autoZoomEnabled || clicker){
+        return;
+    }
+    if(SDL_GetTicks()-lastReframeTicks<AUTO_ZOOM_INTERVAL_MS){
+        return;
+    }
+    performAutoZoom();
+}
+void Application::performAutoZoom(){
+    double bestScore=-1.0;
+    double bestX=(viewport.getXi()+viewport.getXf())*0.5;
+    double bestY=(viewport.getYi()+viewport.getYf())*0.5;
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    for(int s=0; s<PROBE_SAMPLES; s++){
+        double u=unit(randomEngine);
+        double v=unit(randomEngine);
+        double cx=viewport.getXi()+u*(viewport.getXf()-viewport.getXi());
+        double cy=viewport.getYi()+v*(viewport.getYf()-viewport.getYi());
+        double zr=cx;
+        double zi=cy;
+        int iterations=0;
+        while(iterations<PROBE_MAX_ITER && zr*zr+zi*zi<=4.0){
+            double nr=zr*zr-zi*zi+cx;
+            zi=2.0*zr*zi+cy;
+            zr=nr;
+            iterations++;
+        }
+        if(iterations<PROBE_MAX_ITER && static_cast<double>(iterations)>bestScore){
+            bestScore=static_cast<double>(iterations);
+            bestX=cx;
+            bestY=cy;
+        }
+    }
+    double ySpan=std::fabs(viewport.getYf()-viewport.getYi());
+    if(!(ySpan>=AUTO_ZOOM_MIN_SPAN) || ySpan/AUTO_ZOOM_DIVISOR<AUTO_ZOOM_MIN_SPAN){
+        viewport.resetToInitial();
+        std::cout<<"[auto] precision floor reached - restarting cycle"<<std::endl;
+    }
+    else{
+        viewport.autoZoom(bestX, bestY, AUTO_ZOOM_DIVISOR);
+    }
+    simulation.reframe(viewport);
+    viewport.log(std::cout);
+    lastReframeTicks=SDL_GetTicks();
 }
 void Application::toggleFullscreen(){
     fullscreen=!fullscreen;
