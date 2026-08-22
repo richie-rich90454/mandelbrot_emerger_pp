@@ -39,6 +39,7 @@ private:
     bool autoZoomEnabled;
     unsigned long long startTicks;
     unsigned long long lastReframeTicks;
+    long long consumedTicks;
     std::mt19937 randomEngine;
     int windowWidth;
     int windowHeight;
