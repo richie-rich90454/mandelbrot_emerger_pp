@@ -33,7 +33,7 @@ Produces a statically linked executable with no runtime DLL dependencies.
 - Iteration math uses IEEE doubles, exactly like JavaScript numbers, so point trajectories are bit-for-bit identical to the original.
 - Screenshots are written by a dependency-free PNG encoder (stored deflate blocks).
 - Autopilot probes 256 random plane points per hop, iterates each up to 512 times, and centers the next zoom on the slowest escaper - a proxy for filament proximity - so it endlessly follows branch structure. When the view span approaches double-precision limits it restarts from full view, making generation truly infinite.
-- Zooms fly instead of cutting: each transition walks keyframed bounds whose span changes by a constant factor per stage (~220ms apart), reframing the same preallocated field at every stage, so emergence chases the camera and nothing is ever reallocated.
+- Zooms glide instead of cutting: dives present an eased crop of the pre-zoom frame while the field silently resolves toward the destination, crossfading into fresh detail on arrival; pull-backs cross through black. Exactly one reframe happens per zoom - never during motion - so no simulation state is reset mid-flight.
 
 ## License
 
