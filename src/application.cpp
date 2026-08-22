@@ -19,13 +19,17 @@ namespace{
     const unsigned long long ANIMATION_MS=2500ull;
     const double CROSSFADE_START=0.75;
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),animationMode(0),pendingApplied(false),startTicks(0),lastReframeTicks(0),animationStartTicks(0),consumedTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),animationMode(0),pendingApplied(false),startTicks(0),lastReframeTicks(0),animationStartTicks(0),consumedTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
+    schemes[3]=new RainbowScheme();
+    schemes[4]=new FireScheme();
+    schemes[5]=new IceScheme();
 }
+const int Application::SCHEME_COUNT;
 Application::~Application(){
-    for(int i=0; i<3; i++){
+    for(int i=0; i<SCHEME_COUNT; i++){
         delete schemes[i];
     }
     if(texture!=nullptr){
@@ -124,9 +128,7 @@ void Application::render(){
     SDL_RenderPresent(renderer);
 }
 void Application::onMouseButtonDown(const SDL_Event& event){
-    if(animating){
-        return;
-    }
+    finishAnimation();
     if(autoZoomEnabled){
         autoZoomEnabled=false;
         std::cout<<"[auto] disengaged (manual control)"<<std::endl;
@@ -166,10 +168,13 @@ void Application::onKeyDown(const SDL_Event& event){
     }
 }
 void Application::cycleColorScheme(){
-    activeScheme=(activeScheme+1)%3;
+    activeScheme=(activeScheme+1)%SCHEME_COUNT;
+    std::cout<<"[color] "<<schemes[activeScheme]->name()<<std::endl;
 }
 void Application::toggleAutoZoom(){
     autoZoomEnabled=!autoZoomEnabled;
+    clicker=false;
+    finishAnimation();
     lastReframeTicks=SDL_GetTicks();
     std::cout<<"[auto] "<<(autoZoomEnabled?"engaged":"disengaged")<<std::endl;
 }
@@ -238,11 +243,25 @@ void Application::performAutoZoom(){
     beginTransition(target);
 }
 // dives glide a magnifying crop across the pre-zoom frame while the live field resolves at the destination, with one reframe total and no simulation resets mid-flight; pull-backs cross through black since nothing beyond the current view is computable
-void Application::beginTransition(const ViewportBounds& target){
-    if(animating){
-        animating=false;
-        SDL_SetTextureAlphaMod(texture, 255);
+void Application::applyPendingTarget(){
+    viewport.setBounds(pendingTarget);
+    simulation.reframe(viewport);
+    viewport.log(std::cout);
+    lastReframeTicks=SDL_GetTicks();
+}
+void Application::finishAnimation(){
+    if(!animating){
+        return;
     }
+    if(animationMode==2 && !pendingApplied){
+        applyPendingTarget();
+        pendingApplied=true;
+    }
+    animating=false;
+    SDL_SetTextureAlphaMod(texture, 255);
+}
+void Application::beginTransition(const ViewportBounds& target){
+    finishAnimation();
     ViewportBounds from=viewport.getBounds();
     double fromSpan=from.yf-from.yi;
     double toSpan=target.yf-target.yi;
@@ -326,10 +345,7 @@ void Application::drawDive(const SDL_FRect& destination){
 void Application::drawFade(const SDL_FRect& destination){
     double t=(SDL_GetTicks()-animationStartTicks)/(double)ANIMATION_MS;
     if(!pendingApplied && t>=0.5){
-        viewport.setBounds(pendingTarget);
-        simulation.reframe(viewport);
-        viewport.log(std::cout);
-        lastReframeTicks=SDL_GetTicks();
+        applyPendingTarget();
         pendingApplied=true;
     }
     if(t>=1.0 || !animating){
