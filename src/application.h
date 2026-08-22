@@ -1,5 +1,6 @@
 #ifndef APPLICATION_H
 #define APPLICATION_H
+#include <random>
 #include "viewport.h"
 #include "simulation.h"
 struct SDL_Window;
@@ -20,6 +21,9 @@ private:
     void onKeyDown(const SDL_Event& event);
     void cycleColorScheme();
     void toggleFullscreen();
+    void toggleAutoZoom();
+    void maybeAutoZoom();
+    void performAutoZoom();
     void saveScreenshot();
     void computeDestinationRect();
     SDL_Window* window;
@@ -32,7 +36,10 @@ private:
     bool clicker;
     bool running;
     bool fullscreen;
+    bool autoZoomEnabled;
     unsigned long long startTicks;
+    unsigned long long lastReframeTicks;
+    std::mt19937 randomEngine;
     int windowWidth;
     int windowHeight;
     float dstX;
