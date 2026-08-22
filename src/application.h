@@ -7,6 +7,7 @@
 struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Texture;
+struct SDL_FRect;
 union SDL_Event;
 class ColorScheme;
 class Application{
@@ -25,14 +26,15 @@ private:
     void toggleAutoZoom();
     void maybeAutoZoom();
     void performAutoZoom();
-    void beginFlight(const ViewportBounds& target);
-    void applyFlightStage();
-    void maybeAdvanceFlight();
+    void beginTransition(const ViewportBounds& target);
+    void drawDive(const SDL_FRect& destination);
+    void drawFade(const SDL_FRect& destination);
     void saveScreenshot();
     void computeDestinationRect();
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* texture;
+    SDL_Texture* flightTexture;
     Viewport viewport;
     Simulation simulation;
     ColorScheme* schemes[3];
@@ -41,13 +43,16 @@ private:
     bool running;
     bool fullscreen;
     bool autoZoomEnabled;
-    bool flying;
-    int flightIndex;
+    bool animating;
+    int animationMode;
+    bool pendingApplied;
     unsigned long long startTicks;
     unsigned long long lastReframeTicks;
-    unsigned long long flightNextStageTicks;
+    unsigned long long animationStartTicks;
     long long consumedTicks;
-    std::vector<ViewportBounds> flightKeys;
+    ViewportBounds animFrom;
+    ViewportBounds pendingTarget;
+    std::vector<unsigned char> flightBuffer;
     std::mt19937 randomEngine;
     int windowWidth;
     int windowHeight;
