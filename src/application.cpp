@@ -15,11 +15,15 @@ namespace{
     const double ZOOM_OUT_FACTOR=2.0;
     const long long MAX_STEPS_PER_RENDER=4096ll;
     const unsigned long long FRAME_BUDGET_MS=14ull;
+    const unsigned long long FLIGHT_STAGE_MS=220ull;
+    const double FLIGHT_MAX_STAGE_FACTOR=1.35;
+    const int FLIGHT_MAX_STAGES=18;
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),startTicks(0),lastReframeTicks(0),consumedTicks(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),flying(false),flightIndex(0),startTicks(0),lastReframeTicks(0),flightNextStageTicks(0),consumedTicks(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
+    flightKeys.reserve(FLIGHT_MAX_STAGES+1);
 }
 Application::~Application(){
     for(int i=0; i<3; i++){
@@ -64,6 +68,7 @@ void Application::run(){
     while(running){
         processEvents();
         render();
+        maybeAdvanceFlight();
         maybeAutoZoom();
     }
 }
@@ -116,11 +121,8 @@ void Application::onMouseButtonDown(const SDL_Event& event){
         clicker=true;
     }
     else{
-        viewport.completeZoom(deviceX, deviceY);
         clicker=false;
-        simulation.reframe(viewport);
-        viewport.log(std::cout);
-        lastReframeTicks=SDL_GetTicks();
+        beginFlight(viewport.completeZoom(deviceX, deviceY));
     }
 }
 void Application::onKeyDown(const SDL_Event& event){
@@ -154,7 +156,7 @@ void Application::toggleAutoZoom(){
 }
 // probes random points in the current bounds and steers toward slow escapers, which hug the filament structure; the precision floor restarts full view so generation cycles forever
 void Application::maybeAutoZoom(){
-    if(!autoZoomEnabled || clicker){
+    if(!autoZoomEnabled || clicker || flying){
         return;
     }
     if(SDL_GetTicks()-lastReframeTicks<AUTO_ZOOM_INTERVAL_MS){
@@ -189,27 +191,102 @@ void Application::performAutoZoom(){
     }
     double ySpan=std::fabs(viewport.getYf()-viewport.getYi());
     double outerLimit=(2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth))*64.0;
+    ViewportBounds target=viewport.getBounds();
     if(!(ySpan>=AUTO_ZOOM_MIN_SPAN) || ySpan/AUTO_ZOOM_DIVISOR<AUTO_ZOOM_MIN_SPAN){
-        viewport.resetToInitial();
+        target.xi=-2.0;
+        target.xf=2.0;
+        target.yi=-2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
+        target.yf=2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
         std::cout<<"[auto] precision floor reached - restarting cycle"<<std::endl;
     }
     else if(bestScore>=PROBE_MIN_TARGET_ITER){
-        viewport.autoZoom(bestX, bestY, AUTO_ZOOM_DIVISOR);
+        target=viewport.planAutoZoom(bestX, bestY, AUTO_ZOOM_DIVISOR);
     }
     else{
         // no candidate escaped slowly enough to promise structure: pull back out instead of diving into interior or exterior dead zones
         if(ySpan>=outerLimit){
-            viewport.resetToInitial();
+            target.xi=-2.0;
+            target.xf=2.0;
+            target.yi=-2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
+            target.yf=2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
             std::cout<<"[auto] empty region - restarting cycle"<<std::endl;
         }
         else{
-            viewport.autoZoom((viewport.getXi()+viewport.getXf())*0.5, (viewport.getYi()+viewport.getYf())*0.5, 1.0/ZOOM_OUT_FACTOR);
+            target=viewport.planAutoZoom((viewport.getXi()+viewport.getXf())*0.5, (viewport.getYi()+viewport.getYf())*0.5, 1.0/ZOOM_OUT_FACTOR);
             std::cout<<"[auto] no structure nearby - zooming out"<<std::endl;
         }
     }
+    beginFlight(target);
+}
+// the flight walks keyframed bounds whose span changes by a gentle constant factor per stage, reframing in place each stage so emergence chases the camera without allocating anything
+void Application::beginFlight(const ViewportBounds& target){
+    ViewportBounds from=viewport.getBounds();
+    double fromSpan=from.yf-from.yi;
+    double toSpan=target.yf-target.yi;
+    if(!std::isfinite(fromSpan) || !std::isfinite(toSpan) || !(fromSpan>0.0) || !(toSpan>0.0)){
+        viewport.setBounds(target);
+        simulation.reframe(viewport);
+        viewport.log(std::cout);
+        lastReframeTicks=SDL_GetTicks();
+        flying=false;
+        return;
+    }
+    flightKeys.clear();
+    double cx0=(from.xi+from.xf)*0.5;
+    double cy0=(from.yi+from.yf)*0.5;
+    double cx1=(target.xi+target.xf)*0.5;
+    double cy1=(target.yi+target.yf)*0.5;
+    double aspectRatio=static_cast<double>(windowWidth)/static_cast<double>(windowHeight);
+    int stages=1;
+    if(fromSpan>toSpan){
+        stages=static_cast<int>(std::ceil(std::log(fromSpan/toSpan)/std::log(FLIGHT_MAX_STAGE_FACTOR)));
+    }
+    else if(toSpan>fromSpan){
+        stages=static_cast<int>(std::ceil(std::log(toSpan/fromSpan)/std::log(FLIGHT_MAX_STAGE_FACTOR)));
+    }
+    if(stages<1){
+        stages=1;
+    }
+    if(stages>FLIGHT_MAX_STAGES){
+        stages=FLIGHT_MAX_STAGES;
+    }
+    for(int s=1; s<stages; s++){
+        double t=static_cast<double>(s)/static_cast<double>(stages);
+        double h=fromSpan*std::pow(toSpan/fromSpan, t);
+        double w=h*aspectRatio;
+        ViewportBounds key;
+        key.xi=(cx0+(cx1-cx0)*t)-w*0.5;
+        key.xf=(cx0+(cx1-cx0)*t)+w*0.5;
+        key.yi=(cy0+(cy1-cy0)*t)-h*0.5;
+        key.yf=(cy0+(cy1-cy0)*t)+h*0.5;
+        flightKeys.push_back(key);
+    }
+    flightKeys.push_back(target);
+    flightIndex=0;
+    flying=true;
+    applyFlightStage();
+}
+void Application::applyFlightStage(){
+    viewport.setBounds(flightKeys[flightIndex]);
     simulation.reframe(viewport);
     viewport.log(std::cout);
     lastReframeTicks=SDL_GetTicks();
+    flightNextStageTicks=lastReframeTicks+FLIGHT_STAGE_MS;
+}
+void Application::maybeAdvanceFlight(){
+    if(!flying){
+        return;
+    }
+    if(SDL_GetTicks()<flightNextStageTicks){
+        return;
+    }
+    flightIndex++;
+    if(flightIndex>=static_cast<int>(flightKeys.size())){
+        flying=false;
+        flightKeys.clear();
+        return;
+    }
+    applyFlightStage();
 }
 void Application::toggleFullscreen(){
     fullscreen=!fullscreen;
