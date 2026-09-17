@@ -1,22 +1,21 @@
 #ifndef SIMULATION_H
 #define SIMULATION_H
 #include <vector>
-#include "pixel_buffer.h"
 class Viewport;
 class ColorScheme;
 class Simulation{
 public:
     Simulation(int deviceWidth, int deviceHeight);
     void reframe(const Viewport& viewport);
-    void step(long long frameIndex, const ColorScheme* scheme);
-    const PixelBuffer& getBuffer() const;
+    void step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch);
 private:
-    void renderRows(int startRow, int endRow, long long frameIndex, const ColorScheme* scheme);
+    void renderRows(int startRow, int endRow, int passCount, long long baseIndex, long long divisor, const ColorScheme* scheme, unsigned char* pixels, int pitch);
     int width;
     int height;
-    PixelBuffer buffer;
-    std::vector<double> container;
-    std::vector<double> coords;
+    std::vector<double> z;
     std::vector<double> diverge;
+    std::vector<double> planeX;
+    std::vector<double> planeY;
+    long long frameIndex;
 };
 #endif
