@@ -31,14 +31,20 @@ private:
     void finishAnimation();
     void drawDive(const SDL_FRect& destination);
     void drawFade(const SDL_FRect& destination);
+    void captureScreenshot(const unsigned char* pixels, int pitch);
     void saveScreenshot();
     void computeDestinationRect();
+    int plannedPassCount() const;
+    static bool contains(const ViewportBounds& outer, const ViewportBounds& inner);
+    static bool validBounds(const ViewportBounds& bounds);
     static const int SCHEME_COUNT=6;
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* texture;
     SDL_Texture* flightTexture;
     Viewport viewport;
+    int bufferWidth;
+    int bufferHeight;
     Simulation simulation;
     ColorScheme* schemes[SCHEME_COUNT];
     int activeScheme;
@@ -47,15 +53,15 @@ private:
     bool fullscreen;
     bool autoZoomEnabled;
     bool animating;
+    bool flightCapturePending;
+    bool screenshotRequested;
     int animationMode;
     bool pendingApplied;
-    unsigned long long startTicks;
     unsigned long long lastReframeTicks;
     unsigned long long animationStartTicks;
-    long long consumedTicks;
     ViewportBounds animFrom;
     ViewportBounds pendingTarget;
-    std::vector<unsigned char> flightBuffer;
+    std::vector<unsigned char> screenshotPixels;
     std::mt19937 randomEngine;
     int windowWidth;
     int windowHeight;
@@ -64,5 +70,6 @@ private:
     float dstW;
     float dstH;
     float scale;
+    double perPassNanos;
 };
 #endif
