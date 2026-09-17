@@ -14,12 +14,13 @@ namespace{
     const double AUTO_ZOOM_DIVISOR=3.0;
     const double AUTO_ZOOM_MIN_SPAN=1e-11;
     const double ZOOM_OUT_FACTOR=2.0;
-    const long long MAX_STEPS_PER_RENDER=4096ll;
+    const int MAX_PASSES_PER_FRAME=4096;
     const unsigned long long FRAME_BUDGET_MS=14ull;
+    const unsigned long long MINIMIZED_POLL_MS=50ull;
     const unsigned long long ANIMATION_MS=2500ull;
     const double CROSSFADE_START=0.75;
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),simulation(cssWidth*RES, cssHeight*RES),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),animationMode(0),pendingApplied(false),startTicks(0),lastReframeTicks(0),animationStartTicks(0),consumedTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),bufferWidth(cssWidth*RES),bufferHeight(cssHeight*RES),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f),perPassNanos(0.0){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
@@ -57,13 +58,12 @@ bool Application::initialize(){
         return false;
     }
     SDL_SetRenderVSync(renderer, 1);
-    texture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, simulation.getBuffer().getWidth(), simulation.getBuffer().getHeight());
+    texture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
     if(texture==nullptr){
         std::cerr<<"SDL_CreateTexture failed: "<<SDL_GetError()<<std::endl;
         return false;
     }
-    flightBuffer.resize(static_cast<std::size_t>(simulation.getBuffer().getWidth())*static_cast<std::size_t>(simulation.getBuffer().getHeight())*4u);
-    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, simulation.getBuffer().getWidth(), simulation.getBuffer().getHeight());
+    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
     if(flightTexture==nullptr){
         std::cerr<<"SDL_CreateTexture(flight) failed: "<<SDL_GetError()<<std::endl;
         return false;
@@ -72,8 +72,7 @@ bool Application::initialize(){
 }
 void Application::run(){
     running=true;
-    startTicks=SDL_GetTicks();
-    lastReframeTicks=startTicks;
+    lastReframeTicks=SDL_GetTicks();
     simulation.reframe(viewport);
     viewport.log(std::cout);
     std::cout<<"[auto] engaged (press A to toggle, click to take manual control)"<<std::endl;
@@ -103,15 +102,39 @@ void Application::processEvents(){
 }
 void Application::render(){
     computeDestinationRect();
-    // lockstep passes run under a per-frame time budget: iteration speed becomes whatever the CPU sustains, decoupled from vsync, and escape records share the same counter so fade ratios stay consistent
-    unsigned long long frameStart=SDL_GetTicks();
-    long long stepsDone=0;
-    while(stepsDone<MAX_STEPS_PER_RENDER && (stepsDone==0 || SDL_GetTicks()-frameStart<FRAME_BUDGET_MS)){
-        simulation.step(consumedTicks+1, schemes[activeScheme]);
-        consumedTicks++;
-        stepsDone++;
+    if((SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)!=0){
+        if(flightCapturePending){
+            void* lockedPixels=nullptr;
+            int lockedPitch=0;
+            if(SDL_LockTexture(texture, nullptr, &lockedPixels, &lockedPitch)){
+                SDL_UpdateTexture(flightTexture, nullptr, lockedPixels, lockedPitch);
+                flightCapturePending=false;
+            }
+        }
+        SDL_Delay(MINIMIZED_POLL_MS);
+        return;
     }
-    SDL_UpdateTexture(texture, nullptr, simulation.getBuffer().data(), simulation.getBuffer().getWidth()*4);
+    // the simulation writes straight into the locked streaming texture, so a batch never costs an extra frame copy
+    void* lockedPixels=nullptr;
+    int lockedPitch=0;
+    if(SDL_LockTexture(texture, nullptr, &lockedPixels, &lockedPitch)){
+        unsigned char* pixels=static_cast<unsigned char*>(lockedPixels);
+        if(flightCapturePending){
+            SDL_UpdateTexture(flightTexture, nullptr, pixels, lockedPitch);
+            flightCapturePending=false;
+        }
+        const int passes=plannedPassCount();
+        const unsigned long long start=SDL_GetTicksNS();
+        simulation.step(passes, schemes[activeScheme], pixels, lockedPitch);
+        const unsigned long long elapsed=SDL_GetTicksNS()-start;
+        const double perPass=static_cast<double>(elapsed)/static_cast<double>(passes);
+        perPassNanos=(perPassNanos>0.0)?(perPassNanos*0.75+perPass*0.25):perPass;
+        if(screenshotRequested){
+            captureScreenshot(pixels, lockedPitch);
+            screenshotRequested=false;
+        }
+        SDL_UnlockTexture(texture);
+    }
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     SDL_FRect destination={dstX, dstY, dstW, dstH};
@@ -126,8 +149,33 @@ void Application::render(){
         SDL_RenderTexture(renderer, texture, nullptr, &destination);
     }
     SDL_RenderPresent(renderer);
+    if(!screenshotPixels.empty()){
+        saveScreenshot();
+    }
+}
+int Application::plannedPassCount() const{
+    if(!(perPassNanos>0.0)){
+        return 1;
+    }
+    double passes=static_cast<double>(FRAME_BUDGET_MS)*1000000.0/perPassNanos;
+    if(passes<1.0){
+        return 1;
+    }
+    if(passes>static_cast<double>(MAX_PASSES_PER_FRAME)){
+        return MAX_PASSES_PER_FRAME;
+    }
+    return static_cast<int>(passes);
+}
+bool Application::contains(const ViewportBounds& outer, const ViewportBounds& inner){
+    return inner.xi>=outer.xi && inner.xf<=outer.xf && inner.yi>=outer.yi && inner.yf<=outer.yf;
+}
+bool Application::validBounds(const ViewportBounds& bounds){
+    return std::isfinite(bounds.xi) && std::isfinite(bounds.xf) && std::isfinite(bounds.yi) && std::isfinite(bounds.yf) && bounds.xf>bounds.xi && bounds.yf>bounds.yi;
 }
 void Application::onMouseButtonDown(const SDL_Event& event){
+    if(event.button.button!=SDL_BUTTON_LEFT){
+        return;
+    }
     finishAnimation();
     if(autoZoomEnabled){
         autoZoomEnabled=false;
@@ -147,9 +195,12 @@ void Application::onMouseButtonDown(const SDL_Event& event){
     }
 }
 void Application::onKeyDown(const SDL_Event& event){
+    if(event.key.repeat){
+        return;
+    }
     switch(event.key.key){
         case SDLK_RETURN:
-            saveScreenshot();
+            screenshotRequested=true;
             break;
         case SDLK_C:
             cycleColorScheme();
@@ -242,7 +293,7 @@ void Application::performAutoZoom(){
     }
     beginTransition(target);
 }
-// dives glide a magnifying crop across the pre-zoom frame while the live field resolves at the destination, with one reframe total and no simulation resets mid-flight; pull-backs cross through black since nothing beyond the current view is computable
+// dives glide a magnifying crop across the pre-zoom frame while the live field resolves at the destination, with one reframe total and no simulation resets mid-flight; pull-backs and targets the frame cannot cover cross through black since nothing beyond the current view is computable
 void Application::applyPendingTarget(){
     viewport.setBounds(pendingTarget);
     simulation.reframe(viewport);
@@ -263,21 +314,18 @@ void Application::finishAnimation(){
 void Application::beginTransition(const ViewportBounds& target){
     finishAnimation();
     ViewportBounds from=viewport.getBounds();
-    double fromSpan=from.yf-from.yi;
-    double toSpan=target.yf-target.yi;
-    if(!std::isfinite(fromSpan) || !std::isfinite(toSpan) || !(fromSpan>0.0) || !(toSpan>0.0)){
-        viewport.setBounds(target);
-        simulation.reframe(viewport);
-        viewport.log(std::cout);
-        lastReframeTicks=SDL_GetTicks();
+    // a degenerate selection (a double click, for example) has nothing to show and must not reset the running field
+    if(!validBounds(from) || !validBounds(target)){
         return;
     }
+    double fromSpan=from.yf-from.yi;
+    double toSpan=target.yf-target.yi;
     animationStartTicks=SDL_GetTicks();
     pendingTarget=target;
     pendingApplied=false;
-    if(toSpan<fromSpan*0.999){
-        std::memcpy(flightBuffer.data(), simulation.getBuffer().data(), flightBuffer.size());
-        SDL_UpdateTexture(flightTexture, nullptr, flightBuffer.data(), simulation.getBuffer().getWidth()*4);
+    // a dive only works when the captured frame actually contains the destination; anything wider or offset needs the cross-fade
+    if(contains(from, target) && toSpan<fromSpan*0.999){
+        flightCapturePending=true;
         animFrom=from;
         animationMode=1;
         animating=true;
@@ -286,7 +334,7 @@ void Application::beginTransition(const ViewportBounds& target){
         viewport.log(std::cout);
         lastReframeTicks=SDL_GetTicks();
     }
-    else if(toSpan>fromSpan*1.001){
+    else if(!contains(from, target) || toSpan>fromSpan*1.001){
         animationMode=2;
         animating=true;
     }
@@ -307,6 +355,7 @@ void Application::drawDive(const SDL_FRect& destination){
     }
     double e=t*t*(3.0-2.0*t);
     double fromSpan=animFrom.yf-animFrom.yi;
+    double fromWidth=animFrom.xf-animFrom.xi;
     double fromCx=(animFrom.xi+animFrom.xf)*0.5;
     double fromCy=(animFrom.yi+animFrom.yf)*0.5;
     ViewportBounds to=viewport.getBounds();
@@ -314,14 +363,13 @@ void Application::drawDive(const SDL_FRect& destination){
     double span=std::exp((1.0-e)*std::log(fromSpan)+e*std::log(toSpan));
     double cx=(1.0-e)*fromCx+e*(to.xi+(to.xf-to.xi)*0.5);
     double cy=(1.0-e)*fromCy+e*(to.yi+(to.yf-to.yi)*0.5);
-    double aspectRatio=static_cast<double>(windowWidth)/static_cast<double>(windowHeight);
-    double w=span*aspectRatio;
-    float texW=static_cast<float>(simulation.getBuffer().getWidth());
-    float texH=static_cast<float>(simulation.getBuffer().getHeight());
+    double w=span*(fromWidth/fromSpan);
+    float texW=static_cast<float>(bufferWidth);
+    float texH=static_cast<float>(bufferHeight);
     SDL_FRect src;
-    src.x=texW*static_cast<float>((cx-w*0.5-animFrom.xi)/(animFrom.xf-animFrom.xi));
+    src.x=texW*static_cast<float>((cx-w*0.5-animFrom.xi)/fromWidth);
     src.y=texH*static_cast<float>((animFrom.yf-(cy+span*0.5))/fromSpan);
-    src.w=texW*static_cast<float>(w/(animFrom.xf-animFrom.xi));
+    src.w=texW*static_cast<float>(w/fromWidth);
     src.h=texH*static_cast<float>(span/fromSpan);
     if(src.x<0.0f){
         src.x=0.0f;
@@ -366,6 +414,13 @@ void Application::toggleFullscreen(){
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
 }
+void Application::captureScreenshot(const unsigned char* pixels, int pitch){
+    const std::size_t rowBytes=static_cast<std::size_t>(bufferWidth)*4u;
+    screenshotPixels.resize(rowBytes*static_cast<std::size_t>(bufferHeight));
+    for(int y=0; y<bufferHeight; y++){
+        std::memcpy(screenshotPixels.data()+static_cast<std::size_t>(y)*rowBytes, pixels+static_cast<std::size_t>(y)*static_cast<std::size_t>(pitch), rowBytes);
+    }
+}
 void Application::saveScreenshot(){
     std::time_t now=std::time(nullptr);
     std::tm localTime;
@@ -377,19 +432,20 @@ void Application::saveScreenshot(){
     char name[64];
     std::strftime(name, sizeof(name), "mandelbrot_%Y%m%d_%H%M%S.png", &localTime);
     PngWriter writer;
-    if(writer.save(simulation.getBuffer(), name)){
+    if(writer.save(screenshotPixels.data(), bufferWidth, bufferHeight, name)){
         std::cout<<"Saved "<<name<<std::endl;
     }
     else{
         std::cerr<<"Failed to save "<<name<<std::endl;
     }
+    screenshotPixels.clear();
 }
 void Application::computeDestinationRect(){
     int windowW=0;
     int windowH=0;
     SDL_GetWindowSize(window, &windowW, &windowH);
-    float bufferW=static_cast<float>(simulation.getBuffer().getWidth());
-    float bufferH=static_cast<float>(simulation.getBuffer().getHeight());
+    float bufferW=static_cast<float>(bufferWidth);
+    float bufferH=static_cast<float>(bufferHeight);
     scale=(static_cast<float>(windowW)/bufferW<static_cast<float>(windowH)/bufferH)?static_cast<float>(windowW)/bufferW:static_cast<float>(windowH)/bufferH;
     dstW=bufferW*scale;
     dstH=bufferH*scale;
