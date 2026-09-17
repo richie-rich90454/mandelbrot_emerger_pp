@@ -17,15 +17,99 @@ Most Mandelbrot viewers use a fixed `MAX_ITERATIONS` cap and lose integrity when
 
 ## Building
 
-Requires CMake >= 3.25, a C++20 compiler, and network access on first configure (SDL3 is fetched automatically).
+Requires CMake >= 3.25, a C++20 compiler (GCC 13+, Clang 16+, AppleClang 15+, or MSVC 19.36+), and network access on first configure (SDL3 is fetched automatically via `FetchContent`).
+
+The resulting executable is statically linked against SDL3 and the C++ runtime - no third-party DLLs to ship. On Windows that means `libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` are **not** needed at runtime; the binary imports only OS DLLs.
+
+### Windows - MSYS2 / UCRT64 (recommended)
+
+Produces a fully static, dependency-free `.exe`.
 
 ```sh
+# from an "MSYS2 UCRT64" shell:
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja git
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/mandelbrot_emerger.exe
+```
+
+From a plain PowerShell, same commands work **if** `C:\msys64\ucrt64\bin` precedes any other `libwinpthread-1.dll` provider on `PATH`:
+
+```powershell
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+.\build\mandelbrot_emerger.exe
+```
+
+> **PATH gotcha.** `cc1.exe` (invoked internally by `gcc.exe`) resolves DLLs like `libwinpthread-1.dll` and `libzstd.dll` via the process `PATH`, not relative to `gcc.exe`. If another toolchain's `bin` (PostgreSQL, LLVM, a different MinGW, …) precedes `C:\msys64\ucrt64\bin` on `PATH`, `cc1` loads an incompatible DLL and aborts with `STATUS_ENTRYPOINT_NOT_FOUND`. Make sure `C:\msys64\ucrt64\bin` is near the front of the Machine or User `PATH`, then open a fresh terminal. Verify with:
+>
+> ```powershell
+> $env:PATH -split ';' | Where-Object { $_ -match 'PostgreSQL|msys64' }
+> ```
+>
+> `ucrt64\bin` should come before `PostgreSQL\…\bin`.
+
+### Windows - MSVC (Visual Studio 2022)
+
+From a *Developer PowerShell for VS 2022* (or after running `vcvars64.bat`):
+
+```powershell
 cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+.\build\Release\mandelbrot_emerger.exe
+```
+
+`CMakeLists.txt` sets `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`, so the produced `.exe` statically links the CRT - no `vcruntime140.dll` / `msvcp140.dll` deployment needed.
+
+To build in the IDE instead, open the generated `build\mandelbrot_emerger.sln`.
+
+### Linux
+
+```sh
+sudo apt install cmake ninja-build g++ git   # Debian / Ubuntu
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ./build/mandelbrot_emerger
 ```
 
-Produces a statically linked executable with no runtime DLL dependencies.
+The default build is static against SDL3 but dynamically links `libc`. For a **fully static** ELF with no dynamic dependencies:
+
+```sh
+sudo apt install musl-tools
+CC=musl-gcc CXX=musl-g++ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+# verify: ldd build/mandelbrot_emerger  → "not a dynamic executable"
+```
+
+### macOS
+
+```sh
+brew install cmake ninja
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/mandelbrot_emerger
+```
+
+The `-static -static-libgcc -static-libstdc++` flags in `CMakeLists.txt` are guarded to apply on GCC/MinGW only, since AppleClang does not support them. macOS builds dynamically link `libSystem`, as every macOS binary does.
+
+### Manual / any host
+
+If Ninja isn't installed, drop `-G Ninja` and CMake will pick a default generator for the platform:
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+## Portability matrix
+
+| Target | Compiler | Link mode | Runtime deps | Ships as |
+|---|---|---|---|---|
+| Windows | MinGW-w64 (UCRT64) | `-static -static-libgcc -static-libstdc++` | none | single `.exe` |
+| Windows | MSVC 19.36+ | static SDL3 + static CRT (`/MT`) | none | single `.exe` |
+| Linux (glibc) | GCC / Clang | static SDL3, dynamic libc | glibc >= build host | single ELF |
+| Linux (musl) | `musl-gcc` | fully static | none | single ELF |
+| macOS | AppleClang | static SDL3, dynamic libSystem | OS-provided | single Mach-O |
 
 ## Implementation notes
 
@@ -37,5 +121,5 @@ Produces a statically linked executable with no runtime DLL dependencies.
 - Zooms glide instead of cutting: dives present an eased crop of the pre-zoom frame while the field silently resolves toward the destination, crossfading into fresh detail on arrival; zoom-outs, offset rectangles and any target the current frame cannot contain cross through black instead. Exactly one reframe happens per zoom - before a dive, or at the black crossing of a cross-fade - so no simulation state is reset while imagery is visible.
 
 ## License
-
+[License](LICENSE) \
 Port of MIT-licensed work by drasimov; this port follows the same license intent.
