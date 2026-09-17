@@ -1,5 +1,6 @@
 #include <SDL3/SDL.h>
 #include <iostream>
+#include <new>
 #include "application.h"
 int main(int argc, char** argv){
     (void)argc;
@@ -14,13 +15,18 @@ int main(int argc, char** argv){
         SDL_Quit();
         return 1;
     }
-    {
+    try{
         Application application(bounds.w, bounds.h);
         if(!application.initialize()){
             SDL_Quit();
             return 1;
         }
         application.run();
+    }
+    catch(const std::bad_alloc&){
+        std::cerr<<"Not enough memory for the "<<bounds.w<<"x"<<bounds.h<<" display buffer"<<std::endl;
+        SDL_Quit();
+        return 1;
     }
     SDL_Quit();
     return 0;
