@@ -35,7 +35,6 @@ private:
     void captureScreenshot(const unsigned char* pixels, int pitch);
     void saveScreenshot();
     void computeDestinationRect();
-    int plannedPassCount() const;
     static bool contains(const ViewportBounds& outer, const ViewportBounds& inner);
     static bool validBounds(const ViewportBounds& bounds);
     static const int SCHEME_COUNT=6;
@@ -71,6 +70,5 @@ private:
     float dstW;
     float dstH;
     float scale;
-    double perPassNanos;
 };
 #endif
