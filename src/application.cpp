@@ -12,6 +12,7 @@
 #endif
 namespace{
     const unsigned long long AUTO_ZOOM_INTERVAL_MS=6000ull;
+    const long long AUTO_ZOOM_MIN_PASSES=1200;
     const int PROBE_SAMPLES=256;
     const int PROBE_MAX_ITER=512;
     const int PROBE_MIN_TARGET_ITER=16;
@@ -30,13 +31,13 @@ namespace{
 #ifdef __EMSCRIPTEN__
         const double pixelRatio=EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
         const double outputPixels=static_cast<double>(cssWidth)*static_cast<double>(cssHeight)*pixelRatio*pixelRatio;
-        const double budgetPixels=static_cast<double>(cores)*350000.0;
+        const double budgetPixels=static_cast<double>(cores)*300000.0;
 #else
         const double outputPixels=static_cast<double>(cssWidth)*static_cast<double>(cssHeight);
         const double budgetPixels=static_cast<double>(cores)*1000000.0;
 #endif
         double scale=std::sqrt(budgetPixels/outputPixels);
-        scale=(scale>=1.0)?(std::floor(scale*4.0+0.5)/4.0):(std::floor(scale*20.0)/20.0);
+        scale=(scale>=1.0)?(std::floor(scale*10.0+0.5)/10.0):(std::floor(scale*20.0)/20.0);
         if(scale<0.25){
             scale=0.25;
         }
@@ -192,8 +193,7 @@ void Application::render(){
     int lockedPitch=0;
     if(SDL_LockTexture(texture, nullptr, &lockedPixels, &lockedPitch)){
         unsigned char* pixels=static_cast<unsigned char*>(lockedPixels);
-        const double nowSeconds=SDL_GetTicks()/1000.0+0.1;
-        simulation.step(1, schemes[activeScheme], pixels, lockedPitch, nowSeconds);
+        simulation.step(1, schemes[activeScheme], pixels, lockedPitch);
         if(screenshotRequested){
             captureScreenshot(pixels, lockedPitch);
             screenshotRequested=false;
@@ -286,6 +286,10 @@ void Application::toggleAutoZoom(){
 // probes random points in the current bounds and steers toward slow escapers, which hug the filament structure; the precision floor restarts full view so generation cycles forever
 void Application::maybeAutoZoom(){
     if(!autoZoomEnabled || clicker || animating){
+        return;
+    }
+    // a zoom only starts once the view has resolved enough passes to show its structure, never on a half-drawn frame
+    if(simulation.passesSinceReframe()<AUTO_ZOOM_MIN_PASSES){
         return;
     }
     if(SDL_GetTicks()-lastReframeTicks<AUTO_ZOOM_INTERVAL_MS){
