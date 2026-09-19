@@ -1,7 +1,6 @@
 #include "simulation.h"
 #include "viewport.h"
 #include "color_scheme.h"
-#include <bit>
 #include <cmath>
 #include <condition_variable>
 #include <cstddef>
@@ -127,11 +126,9 @@ void Simulation::step(int passCount, const ColorScheme* scheme, unsigned char* p
     frameIndex+=passCount;
     const long long span=frameIndex-reframeIndex;
     while(static_cast<long long>(toneTable.size())<=span){
-        const std::size_t n=toneTable.size();
-        const double bandBase=std::ldexp(1.0, static_cast<int>(std::bit_width(static_cast<unsigned int>(n)))-1);
-        toneTable.push_back(255.0*(0.25+0.75*((static_cast<double>(n)-bandBase)/bandBase))*std::sqrt(std::sqrt(static_cast<double>(n))));
+        toneTable.push_back(255.0*std::pow(static_cast<double>(toneTable.size()), 0.75));
     }
-    const double toneScale=std::pow(static_cast<double>(span), -0.25);
+    const double toneScale=std::pow(static_cast<double>(span), -0.75);
     parallelRows(height, [this, passCount, baseIndex, toneScale, scheme, pixels, pitch](int startRow, int endRow){
         renderRows(startRow, endRow, passCount, baseIndex, toneScale, scheme, pixels, pitch);
     });
@@ -172,8 +169,8 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, long long b
             }
             double brightness=0.0;
             if(escapeCount!=0.0){
-                // table holds band(count)*count^0.25; scaling by span^-0.25 gives the gentle fade, and the ramp
-                // within each octave of the count lays the escape-time level sets over it so filaments stay legible
+                // table holds count^0.75; scaling by span^-0.75 gives a monotone fade, so the slowest escapers are
+                // always the brightest and every filament reads as a bright ridge against the dimmer field
                 brightness=toneTable[static_cast<std::size_t>(escapeCount)]*toneScale;
             }
             Rgba color;
