@@ -17,13 +17,11 @@ namespace{
     const double AUTO_ZOOM_DIVISOR=3.0;
     const double AUTO_ZOOM_MIN_SPAN=1e-11;
     const double ZOOM_OUT_FACTOR=2.0;
-    const int MAX_PASSES_PER_FRAME=4096;
-    const unsigned long long FRAME_BUDGET_MS=14ull;
     const unsigned long long MINIMIZED_POLL_MS=50ull;
     const unsigned long long ANIMATION_MS=2500ull;
     const double CROSSFADE_START=0.75;
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),bufferWidth(cssWidth*RES),bufferHeight(cssHeight*RES),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f),perPassNanos(0.0){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),bufferWidth(cssWidth*RES),bufferHeight(cssHeight*RES),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
@@ -54,13 +52,23 @@ bool Application::initialize(){
     const SDL_WindowFlags windowFlags=SDL_WINDOW_RESIZABLE;
 #else
     const SDL_WindowFlags windowFlags=SDL_WINDOW_FULLSCREEN|SDL_WINDOW_BORDERLESS;
+    // direct3d11 allocates and maps a full-frame staging texture on every lock, serializing the frame; the opengl backend uploads in place and holds 60fps
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
 #endif
     window=SDL_CreateWindow("Mandelbrot Emerger", windowWidth, windowHeight, windowFlags);
     if(window==nullptr){
         std::cerr<<"SDL_CreateWindow failed: "<<SDL_GetError()<<std::endl;
         return false;
     }
+#ifdef __EMSCRIPTEN__
     renderer=SDL_CreateRenderer(window, nullptr);
+#else
+    renderer=SDL_CreateRenderer(window, nullptr);
+    if(renderer==nullptr){
+        SDL_ResetHint(SDL_HINT_RENDER_DRIVER);
+        renderer=SDL_CreateRenderer(window, nullptr);
+    }
+#endif
     if(renderer==nullptr){
         std::cerr<<"SDL_CreateRenderer failed: "<<SDL_GetError()<<std::endl;
         return false;
@@ -146,12 +154,8 @@ void Application::render(){
             SDL_UpdateTexture(flightTexture, nullptr, pixels, lockedPitch);
             flightCapturePending=false;
         }
-        const int passes=plannedPassCount();
-        const unsigned long long start=SDL_GetTicksNS();
+        const int passes=1;
         simulation.step(passes, schemes[activeScheme], pixels, lockedPitch);
-        const unsigned long long elapsed=SDL_GetTicksNS()-start;
-        const double perPass=static_cast<double>(elapsed)/static_cast<double>(passes);
-        perPassNanos=(perPassNanos>0.0)?(perPassNanos*0.75+perPass*0.25):perPass;
         if(screenshotRequested){
             captureScreenshot(pixels, lockedPitch);
             screenshotRequested=false;
@@ -175,24 +179,6 @@ void Application::render(){
     if(!screenshotPixels.empty()){
         saveScreenshot();
     }
-}
-int Application::plannedPassCount() const{
-#ifdef __EMSCRIPTEN__
-    // the desktop never fills its frame budget - per-pass row-thread setup over a full-display buffer costs it 18-30ms - so it renders exactly one pass per frame; matching that pace keeps the escape fade identical instead of racing to black at web speeds
-    return 1;
-#else
-    if(!(perPassNanos>0.0)){
-        return 1;
-    }
-    double passes=static_cast<double>(FRAME_BUDGET_MS)*1000000.0/perPassNanos;
-    if(passes<1.0){
-        return 1;
-    }
-    if(passes>static_cast<double>(MAX_PASSES_PER_FRAME)){
-        return MAX_PASSES_PER_FRAME;
-    }
-    return static_cast<int>(passes);
-#endif
 }
 bool Application::contains(const ViewportBounds& outer, const ViewportBounds& inner){
     return inner.xi>=outer.xi && inner.xf<=outer.xf && inner.yi>=outer.yi && inner.yf<=outer.yf;
