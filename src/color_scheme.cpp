@@ -45,10 +45,11 @@ AlphaScheme::AlphaScheme():ColorScheme(){
 AlphaScheme::~AlphaScheme(){
 }
 void AlphaScheme::shade(double brightness, Rgba& out) const{
-    out.r=255;
-    out.g=255;
-    out.b=255;
-    out.a=clampChannel(std::sqrt(brightness)*std::sqrt(255.0));
+    unsigned char level=clampChannel(std::sqrt(brightness)*std::sqrt(255.0));
+    out.r=level;
+    out.g=level;
+    out.b=level;
+    out.a=255;
 }
 const char* AlphaScheme::name() const{
     return "alpha";
