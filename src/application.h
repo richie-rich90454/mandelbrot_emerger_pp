@@ -27,7 +27,8 @@ private:
     void toggleAutoZoom();
     void maybeAutoZoom();
     void performAutoZoom();
-    void beginTransition(const ViewportBounds& target);
+    void handleReferenceEscape();
+    void beginTransition(const ViewportBounds& target, double referenceU=0.5, double referenceV=0.5);
     void applyPendingTarget();
     void finishAnimation();
     void drawDive(const SDL_FRect& destination);
@@ -35,6 +36,7 @@ private:
     void captureScreenshot(const unsigned char* pixels, int pitch);
     void saveScreenshot();
     void computeDestinationRect();
+    ViewportBounds clampToInitial(const ViewportBounds& bounds) const;
     static bool contains(const ViewportBounds& outer, const ViewportBounds& inner);
     static bool validBounds(const ViewportBounds& bounds);
     static const int SCHEME_COUNT=7;
@@ -61,6 +63,12 @@ private:
     unsigned long long animationStartTicks;
     ViewportBounds animFrom;
     ViewportBounds pendingTarget;
+    double pendingRefU;
+    double pendingRefV;
+    double lastRefU;
+    double lastRefV;
+    long long nextZoomPasses;
+    int referenceRebases;
     std::vector<unsigned char> screenshotPixels;
     std::mt19937 randomEngine;
     int windowWidth;
