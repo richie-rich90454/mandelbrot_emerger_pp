@@ -1,7 +1,6 @@
 #ifndef VIEWPORT_H
 #define VIEWPORT_H
 #include <iosfwd>
-const int RES=2;
 struct ViewportBounds{
     double xi;
     double xf;
@@ -11,6 +10,7 @@ struct ViewportBounds{
 class Viewport{
 public:
     Viewport(int cssWidth, int cssHeight);
+    void setDeviceSize(int width, int height);
     void beginZoom(double deviceX, double deviceY);
     ViewportBounds completeZoom(double secondDeviceX, double secondDeviceY);
     ViewportBounds planAutoZoom(double centerX, double centerY, double divisor) const;
@@ -28,6 +28,8 @@ private:
     void initializeBounds();
     int cssWidth;
     int cssHeight;
+    int deviceWidth;
+    int deviceHeight;
     double aspectRatio;
     double boundXi;
     double boundXf;
