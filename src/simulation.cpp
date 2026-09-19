@@ -6,6 +6,9 @@
 namespace{
     template<class Function>
     void parallelRows(int height, const Function& function){
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+        function(0, height);
+#else
         unsigned int threadCount=std::thread::hardware_concurrency();
         if(threadCount==0){
             threadCount=1;
@@ -24,6 +27,7 @@ namespace{
         for(std::size_t t=0; t<workers.size(); t++){
             workers[t].join();
         }
+#endif
     }
 }
 Simulation::Simulation(int deviceWidth, int deviceHeight):width(deviceWidth),height(deviceHeight),z(static_cast<std::size_t>(width)*static_cast<std::size_t>(height)*2u, 0.0),diverge(static_cast<std::size_t>(width)*static_cast<std::size_t>(height), 0.0),planeX(static_cast<std::size_t>(width), 0.0),planeY(static_cast<std::size_t>(height), 0.0),frameIndex(0){
