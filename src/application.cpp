@@ -49,7 +49,7 @@ Application::~Application(){
 }
 bool Application::initialize(){
 #ifdef __EMSCRIPTEN__
-    const SDL_WindowFlags windowFlags=SDL_WINDOW_RESIZABLE;
+    const SDL_WindowFlags windowFlags=SDL_WINDOW_RESIZABLE|SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #else
     const SDL_WindowFlags windowFlags=SDL_WINDOW_FULLSCREEN|SDL_WINDOW_BORDERLESS;
     // direct3d11 allocates a full-frame staging texture on every lock and opengl's upload spikes past the frame budget; direct3d12 keeps the desktop at a stable 60fps
@@ -194,13 +194,15 @@ void Application::onMouseButtonDown(const SDL_Event& event){
     if(event.button.button!=SDL_BUTTON_LEFT){
         return;
     }
+    SDL_Event renderEvent=event;
+    SDL_ConvertEventToRenderCoordinates(renderer, &renderEvent);
     finishAnimation();
     if(autoZoomEnabled){
         autoZoomEnabled=false;
         std::cout<<"[auto] disengaged (manual control)"<<std::endl;
     }
-    float mouseX=event.button.x;
-    float mouseY=event.button.y;
+    float mouseX=renderEvent.button.x;
+    float mouseY=renderEvent.button.y;
     double deviceX=static_cast<double>((mouseX-dstX)/scale);
     double deviceY=static_cast<double>((mouseY-dstY)/scale);
     if(!clicker){
@@ -336,13 +338,11 @@ void Application::beginTransition(const ViewportBounds& target){
     if(!validBounds(from) || !validBounds(target)){
         return;
     }
-    double fromSpan=from.yf-from.yi;
-    double toSpan=target.yf-target.yi;
     animationStartTicks=SDL_GetTicks();
     pendingTarget=target;
     pendingApplied=false;
-    // a dive only works when the captured frame actually contains the destination; anything wider or offset needs the cross-fade
-    if(contains(from, target) && toSpan<fromSpan*0.999){
+    // every target the captured frame contains glides - zooms magnify its crop and equal-span selections pan it - while anything wider or offset crosses through black
+    if(contains(from, target)){
         flightCapturePending=true;
         animFrom=from;
         animationMode=1;
@@ -352,15 +352,9 @@ void Application::beginTransition(const ViewportBounds& target){
         viewport.log(std::cout);
         lastReframeTicks=SDL_GetTicks();
     }
-    else if(!contains(from, target) || toSpan>fromSpan*1.001){
+    else{
         animationMode=2;
         animating=true;
-    }
-    else{
-        viewport.setBounds(target);
-        simulation.reframe(viewport);
-        viewport.log(std::cout);
-        lastReframeTicks=SDL_GetTicks();
     }
 }
 void Application::drawDive(const SDL_FRect& destination){
@@ -475,7 +469,7 @@ void Application::saveScreenshot(){
 void Application::computeDestinationRect(){
     int windowW=0;
     int windowH=0;
-    SDL_GetWindowSize(window, &windowW, &windowH);
+    SDL_GetRenderOutputSize(renderer, &windowW, &windowH);
     float bufferW=static_cast<float>(bufferWidth);
     float bufferH=static_cast<float>(bufferHeight);
     scale=(static_cast<float>(windowW)/bufferW<static_cast<float>(windowH)/bufferH)?static_cast<float>(windowW)/bufferW:static_cast<float>(windowH)/bufferH;
