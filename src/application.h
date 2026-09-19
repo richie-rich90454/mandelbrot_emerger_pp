@@ -42,9 +42,9 @@ private:
     SDL_Renderer* renderer;
     SDL_Texture* texture;
     SDL_Texture* flightTexture;
-    Viewport viewport;
     int bufferWidth;
     int bufferHeight;
+    Viewport viewport;
     Simulation simulation;
     ColorScheme* schemes[SCHEME_COUNT];
     int activeScheme;
