@@ -57,4 +57,13 @@ public:
     virtual void shade(double brightness, Rgba& out) const override;
     virtual const char* name() const override;
 };
+class AmberScheme:public ColorScheme{
+public:
+    AmberScheme();
+    virtual ~AmberScheme();
+    virtual void shade(double brightness, Rgba& out) const override;
+    virtual const char* name() const override;
+private:
+    Rgba ramp[256];
+};
 #endif
