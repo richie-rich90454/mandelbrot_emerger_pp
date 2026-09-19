@@ -1,8 +1,15 @@
 #include "viewport.h"
 #include <cmath>
 #include <ostream>
-Viewport::Viewport(int cssWidth, int cssHeight):cssWidth(cssWidth),cssHeight(cssHeight),aspectRatio(static_cast<double>(cssWidth)/static_cast<double>(cssHeight)),boundXi(0.0),boundXf(0.0),boundYi(0.0),boundYf(0.0),selectionPending(false),pendingPlaneX(0.0),pendingPlaneY(0.0){
+Viewport::Viewport(int cssWidth, int cssHeight):cssWidth(cssWidth),cssHeight(cssHeight),deviceWidth(cssWidth*2),deviceHeight(cssHeight*2),aspectRatio(static_cast<double>(cssWidth)/static_cast<double>(cssHeight)),boundXi(0.0),boundXf(0.0),boundYi(0.0),boundYf(0.0),selectionPending(false),pendingPlaneX(0.0),pendingPlaneY(0.0){
     initializeBounds();
+}
+void Viewport::setDeviceSize(int width, int height){
+    if(width<=0 || height<=0){
+        return;
+    }
+    deviceWidth=width;
+    deviceHeight=height;
 }
 void Viewport::initializeBounds(){
     boundXi=-2.0;
@@ -107,12 +114,10 @@ double Viewport::getYf() const{
     return boundYf;
 }
 double Viewport::planeFromDeviceX(double deviceX) const{
-    double span=static_cast<double>(cssWidth*RES);
-    return boundXi+(deviceX/span)*(boundXf-boundXi);
+    return boundXi+(deviceX/static_cast<double>(deviceWidth))*(boundXf-boundXi);
 }
 double Viewport::planeFromDeviceY(double deviceY) const{
-    double span=static_cast<double>(cssHeight*RES);
-    return boundYf+(deviceY/span)*(boundYi-boundYf);
+    return boundYf+(deviceY/static_cast<double>(deviceHeight))*(boundYi-boundYf);
 }
 void Viewport::log(std::ostream& stream) const{
     stream<<"MAG: "<<static_cast<long long>(std::floor(4.0/(boundXf-boundXi)))<<"x"<<"\n";
