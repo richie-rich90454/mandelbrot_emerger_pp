@@ -178,12 +178,10 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, long long b
             }
             Rgba color;
             scheme->shade(brightness, color);
-            // deliberate warm mapping: recombines the scheme's channels exactly as the original screen presentation did, so the rendered frame and the saved PNG show the same colors
-            const unsigned int tint=static_cast<unsigned int>(color.r);
             unsigned char* pixel=rowPixels+column*4u;
-            pixel[0]=static_cast<unsigned char>((static_cast<unsigned int>(color.a)*tint+127u)/255u);
-            pixel[1]=static_cast<unsigned char>((static_cast<unsigned int>(color.b)*tint+127u)/255u);
-            pixel[2]=static_cast<unsigned char>((static_cast<unsigned int>(color.g)*tint+127u)/255u);
+            pixel[0]=color.r;
+            pixel[1]=color.g;
+            pixel[2]=color.b;
             pixel[3]=255;
         }
     }
