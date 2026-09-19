@@ -119,9 +119,9 @@ python -m http.server 8000 -d build-web    # then open http://localhost:8000/
 
 If the `emsdk` tools are not yet on `PATH`, run `emsdk install latest`, `emsdk activate latest`, then `emsdk_env.bat` (cmd) or `.\emsdk_env.ps1` (PowerShell) from the emsdk folder first.
 
-The build enables pthreads (one worker per logical core) and emits `index.html`, `index.js` and `index.wasm`. Threads require a cross-origin-isolated page, so `coi-serviceworker.js` is copied next to the artifacts and injects the COOP/COEP headers on hosts that cannot set them (GitHub Pages, for example) with a single automatic reload. Hosts that do serve those headers (or serve over localhost) do not need it, but shipping it anyway is harmless. A plain-HTTP LAN address is not a secure context, so the service worker cannot register there - use localhost or HTTPS.
+The build emits two WebAssembly modules and a hand-written page loader. `threaded.js` / `threaded.wasm` use pthreads (one worker per logical core) and therefore need a cross-origin-isolated page; `fallback.js` / `fallback.wasm` are single-threaded and need nothing but WebAssembly. `index.html` boots the threaded module whenever the page is already cross-origin isolated, lets the bundled `coi-serviceworker.js` inject COOP/COEP and reload once on hosts that cannot set headers (localhost and HTTPS static hosts), and otherwise boots the single-threaded module. Plain-HTTP LAN addresses, `file://`, private mode and browsers without service workers all fall back automatically.
 
-The CMake build tree lives in `build/web`, and the artifacts are written straight into `build-web/`, so that directory is the complete static dist - `index.html`, `index.js`, `index.wasm` and `coi-serviceworker.js`, nothing else. Upload it as-is.
+The CMake build tree lives in `build/web` and the artifacts are written straight into `build-web/`, so that directory is the complete static dist - `index.html`, `threaded.js`, `threaded.wasm`, `fallback.js`, `fallback.wasm` and `coi-serviceworker.js`, nothing else. Point any static file server at it (static-web-server, Caddy, nginx, GitHub Pages, ...) or zip it and drop it on a host; no headers, rewrites or MIME configuration are needed.
 
 ### Manual / any host
 
@@ -141,7 +141,7 @@ cmake --build build --config Release
 | Linux (glibc) | GCC / Clang | static SDL3, dynamic libc | glibc >= build host | single ELF |
 | Linux (musl) | `musl-gcc` | fully static | none | single ELF |
 | macOS | AppleClang | static SDL3, dynamic libSystem | OS-provided | single Mach-O |
-| Web (WASM) | Emscripten 4+ | SDL3 port, pthreads | none (static HTTP host) | `build-web/` static dist |
+| Web (WASM) | Emscripten 4+ | SDL3 port, pthreads + single-thread fallback | none (any static host, no config) | `build-web/` static dist |
 
 ## Implementation notes
 
