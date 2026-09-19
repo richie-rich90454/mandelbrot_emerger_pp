@@ -120,11 +120,13 @@ void Simulation::reframe(const Viewport& viewport){
 // escapes are stamped with the wall-clock time that fails the magnitude test, and colors are computed once
 // per frame from each point's escape age - an exact and machine-independent version of the original pass ratio
 void Simulation::step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch, double nowSeconds){
-    parallelRows(height, [this, passCount, nowSeconds, scheme, pixels, pitch](int startRow, int endRow){
-        renderRows(startRow, endRow, passCount, nowSeconds, scheme, pixels, pitch);
+    // 255*recency/(recency+0.18) with recency = escapeTime/now, folded into one division per pixel
+    const double toneOffset=0.18*nowSeconds;
+    parallelRows(height, [this, passCount, nowSeconds, toneOffset, scheme, pixels, pitch](int startRow, int endRow){
+        renderRows(startRow, endRow, passCount, nowSeconds, toneOffset, scheme, pixels, pitch);
     });
 }
-void Simulation::renderRows(int startRow, int endRow, int passCount, double nowSeconds, const ColorScheme* scheme, unsigned char* pixels, int pitch){
+void Simulation::renderRows(int startRow, int endRow, int passCount, double nowSeconds, double toneOffset, const ColorScheme* scheme, unsigned char* pixels, int pitch){
     for(int y=startRow; y<endRow; y++){
         const std::size_t row=static_cast<std::size_t>(y);
         double* rowZ=z.data()+row*static_cast<std::size_t>(width)*2u;
@@ -157,9 +159,8 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, double nowS
             }
             double brightness=0.0;
             if(escapeTime!=0.0){
-                // recency is the time-based twin of the original escape-pass ratio, and the rational curve lifts the fading tail for visibility while keeping the brightest points short of pure white
-                const double recency=escapeTime/nowSeconds;
-                brightness=255.0*recency/(recency+0.18);
+                // the rational curve lifts the fading tail for visibility while keeping the brightest points short of pure white
+                brightness=255.0*escapeTime/(escapeTime+toneOffset);
             }
             Rgba color;
             scheme->shade(brightness, color);
