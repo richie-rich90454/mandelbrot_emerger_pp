@@ -92,6 +92,35 @@ cmake --build build
 
 The `-static -static-libgcc -static-libstdc++` flags in `CMakeLists.txt` are guarded to apply on GCC/MinGW only, since AppleClang does not support them. macOS builds dynamically link `libSystem`, as every macOS binary does.
 
+### Web (WebAssembly)
+
+Requires the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) (emsdk 4.0.15+). SDL3 comes from the emsdk port, so nothing is fetched over the network during configure.
+
+Linux / macOS:
+```sh
+emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-web
+python -m http.server 8000 -d build-web    # then open http://localhost:8000/
+```
+
+Windows - cmd (with the emsdk environment active):
+```bat
+emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-web
+python -m http.server 8000 -d build-web    :: then open http://localhost:8000/
+```
+
+Windows - PowerShell:
+```powershell
+emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-web
+python -m http.server 8000 -d build-web    # then open http://localhost:8000/
+```
+
+If the `emsdk` tools are not yet on `PATH`, run `emsdk install latest`, `emsdk activate latest`, then `emsdk_env.bat` (cmd) or `.\emsdk_env.ps1` (PowerShell) from the emsdk folder first.
+
+The build enables pthreads (one worker per logical core) and emits `index.html`, `index.js` and `index.wasm`. Threads require a cross-origin-isolated page, so `coi-serviceworker.js` is copied next to the artifacts and injects the COOP/COEP headers on hosts that cannot set them (GitHub Pages, for example) with a single automatic reload. Hosts that do serve those headers (or serve over localhost) do not need it, but shipping it anyway is harmless. A plain-HTTP LAN address is not a secure context, so the service worker cannot register there - use localhost or HTTPS.
+
 ### Manual / any host
 
 If Ninja isn't installed, drop `-G Ninja` and CMake will pick a default generator for the platform:
@@ -110,6 +139,7 @@ cmake --build build --config Release
 | Linux (glibc) | GCC / Clang | static SDL3, dynamic libc | glibc >= build host | single ELF |
 | Linux (musl) | `musl-gcc` | fully static | none | single ELF |
 | macOS | AppleClang | static SDL3, dynamic libSystem | OS-provided | single Mach-O |
+| Web (WASM) | Emscripten 4+ | SDL3 port, pthreads | none (static HTTP host) | `index.html` + `.js` + `.wasm` |
 
 ## Implementation notes
 
