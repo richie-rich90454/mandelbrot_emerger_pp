@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mandelbrot Emerger</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000}
+canvas{display:block;width:100%;height:100%;outline:none}
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<script>
+(function(){
+    function boot(source){
+        var script=document.createElement("script");
+        script.src=source;
+        document.body.appendChild(script);
+    }
+    // The threaded build needs SharedArrayBuffer, which needs COOP/COEP headers. When the host already sends
+    // them (or the bundled service worker has produced them) this page is crossOriginIsolated and boots the
+    // threaded module. On localhost/HTTPS the service worker can inject the headers and reload once. Where
+    // isolation is impossible - plain HTTP, file://, private mode, no service workers - the single-threaded
+    // module runs instead. Either way the site works from any static host with no server configuration.
+    if(window.crossOriginIsolated){
+        boot("threaded.js");
+        return;
+    }
+    if(window.isSecureContext && "serviceWorker" in navigator){
+        var fallbackTimer=setTimeout(function(){ boot("fallback.js"); }, 4000);
+        var script=document.createElement("script");
+        script.src="coi-serviceworker.js";
+        script.onerror=function(){
+            clearTimeout(fallbackTimer);
+            boot("fallback.js");
+        };
+        document.body.appendChild(script);
+        return;
+    }
+    boot("fallback.js");
+})();
+</script>
+</body>
+</html>
