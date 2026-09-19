@@ -1,11 +1,12 @@
 #ifndef VIEWPORT_H
 #define VIEWPORT_H
 #include <iosfwd>
+#include "big.h"
 struct ViewportBounds{
-    double xi;
-    double xf;
-    double yi;
-    double yf;
+    Big xi;
+    Big xf;
+    Big yi;
+    Big yf;
 };
 class Viewport{
 public:
@@ -13,30 +14,36 @@ public:
     void setDeviceSize(int width, int height);
     void beginZoom(double deviceX, double deviceY);
     ViewportBounds completeZoom(double secondDeviceX, double secondDeviceY);
-    ViewportBounds planAutoZoom(double centerX, double centerY, double divisor) const;
+    ViewportBounds planAutoZoom(const Big& centerX, const Big& centerY, double divisor);
+    ViewportBounds scaledBounds(double factor);
+    ViewportBounds initialBounds() const;
     void setBounds(const ViewportBounds& bounds);
     ViewportBounds getBounds() const;
-    void resetToInitial();
-    double getXi() const;
-    double getXf() const;
-    double getYi() const;
-    double getYf() const;
-    double planeFromDeviceX(double deviceX) const;
-    double planeFromDeviceY(double deviceY) const;
+    Big getXi() const;
+    Big getXf() const;
+    Big getYi() const;
+    Big getYf() const;
+    Big planeFromDeviceX(double deviceX) const;
+    Big planeFromDeviceY(double deviceY) const;
+    Big planeAtUnitX(double u) const;
+    Big planeAtUnitY(double v) const;
+    double spanX() const;
+    double spanY() const;
     void log(std::ostream& stream) const;
 private:
     void initializeBounds();
+    void ensurePrecision(double hintSpan);
     int cssWidth;
     int cssHeight;
     int deviceWidth;
     int deviceHeight;
     double aspectRatio;
-    double boundXi;
-    double boundXf;
-    double boundYi;
-    double boundYf;
+    Big boundXi;
+    Big boundXf;
+    Big boundYi;
+    Big boundYf;
     bool selectionPending;
-    double pendingPlaneX;
-    double pendingPlaneY;
+    Big pendingPlaneX;
+    Big pendingPlaneY;
 };
 #endif
