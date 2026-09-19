@@ -4,7 +4,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Web-green)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A faithful native port of [drasimov/mandelbrot-emerger](https://github.com/drasimov/mandelbrot-emerger) (p5.js) as an SDL3 desktop application.
+A native port of [drasimov/mandelbrot-emerger](https://github.com/drasimov/mandelbrot-emerger) (p5.js) as an SDL3 desktop application.
 
 Most Mandelbrot viewers use a fixed `MAX_ITERATIONS` cap and lose integrity when zooming. This program has none: every pixel's point iterates `z = z^2 + c` once per pass, in lockstep, forever - you watch the set take shape in real time, and resolution grows for as long as you leave it running. There is no precision floor either: viewport coordinates are kept in arbitrary-precision fixed point and pixels are integrated as perturbations of one high-precision reference orbit, so the camera can keep falling inward indefinitely.
 
