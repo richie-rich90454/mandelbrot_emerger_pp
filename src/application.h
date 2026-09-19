@@ -16,6 +16,7 @@ public:
     ~Application();
     bool initialize();
     void run();
+    void tick();
 private:
     void processEvents();
     void render();
