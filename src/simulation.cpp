@@ -92,7 +92,7 @@ namespace{
 #endif
     }
 }
-Simulation::Simulation(int deviceWidth, int deviceHeight):width(deviceWidth),height(deviceHeight),z(static_cast<std::size_t>(width)*static_cast<std::size_t>(height)*2u, 0.0),diverge(static_cast<std::size_t>(width)*static_cast<std::size_t>(height), 0.0),planeX(static_cast<std::size_t>(width), 0.0),planeY(static_cast<std::size_t>(height), 0.0),frameIndex(0){
+Simulation::Simulation(int deviceWidth, int deviceHeight):width(deviceWidth),height(deviceHeight),z(static_cast<std::size_t>(width)*static_cast<std::size_t>(height)*2u, 0.0),diverge(static_cast<std::size_t>(width)*static_cast<std::size_t>(height), 0.0),planeX(static_cast<std::size_t>(width), 0.0),planeY(static_cast<std::size_t>(height), 0.0){
 }
 void Simulation::reframe(const Viewport& viewport){
     for(int x=0; x<width; x++){
@@ -117,17 +117,14 @@ void Simulation::reframe(const Viewport& viewport){
     });
 }
 // one rendered frame's worth of lockstep iterations: each not-yet-escaped point advances passCount times,
-// escapes are stamped with the exact pass that fails the magnitude test, and colors are computed once
-// against the frame index after the batch - the same bytes the per-pass loop produced at that index
-void Simulation::step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch){
-    const long long baseIndex=frameIndex;
-    frameIndex+=passCount;
-    const long long divisor=frameIndex;
-    parallelRows(height, [this, passCount, baseIndex, divisor, scheme, pixels, pitch](int startRow, int endRow){
-        renderRows(startRow, endRow, passCount, baseIndex, divisor, scheme, pixels, pitch);
+// escapes are stamped with the wall-clock time that fails the magnitude test, and colors are computed once
+// per frame from each point's escape age - an exact and machine-independent version of the original pass ratio
+void Simulation::step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch, double nowSeconds){
+    parallelRows(height, [this, passCount, nowSeconds, scheme, pixels, pitch](int startRow, int endRow){
+        renderRows(startRow, endRow, passCount, nowSeconds, scheme, pixels, pitch);
     });
 }
-void Simulation::renderRows(int startRow, int endRow, int passCount, long long baseIndex, long long divisor, const ColorScheme* scheme, unsigned char* pixels, int pitch){
+void Simulation::renderRows(int startRow, int endRow, int passCount, double nowSeconds, const ColorScheme* scheme, unsigned char* pixels, int pitch){
     for(int y=startRow; y<endRow; y++){
         const std::size_t row=static_cast<std::size_t>(y);
         double* rowZ=z.data()+row*static_cast<std::size_t>(width)*2u;
@@ -136,8 +133,8 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, long long b
         const double cy=planeY[row];
         for(int x=0; x<width; x++){
             const std::size_t column=static_cast<std::size_t>(x);
-            double escapeFrame=rowDiverge[column];
-            if(escapeFrame==0.0){
+            double escapeTime=rowDiverge[column];
+            if(escapeTime==0.0){
                 double re=rowZ[column*2u];
                 double im=rowZ[column*2u+1u];
                 const double cx=planeX[column];
@@ -148,19 +145,21 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, long long b
                         re=nextRe;
                     }
                     else{
-                        escapeFrame=static_cast<double>(baseIndex+pass);
-                        rowDiverge[column]=escapeFrame;
+                        escapeTime=nowSeconds;
+                        rowDiverge[column]=escapeTime;
                         break;
                     }
                 }
-                if(escapeFrame==0.0){
+                if(escapeTime==0.0){
                     rowZ[column*2u]=re;
                     rowZ[column*2u+1u]=im;
                 }
             }
             double brightness=0.0;
-            if(escapeFrame!=0.0){
-                brightness=escapeFrame/static_cast<double>(divisor)*255.0;
+            if(escapeTime!=0.0){
+                // recency is the time-based twin of the original escape-pass ratio, and the rational curve lifts the fading tail for visibility while keeping the brightest points short of pure white
+                const double recency=escapeTime/nowSeconds;
+                brightness=255.0*recency/(recency+0.18);
             }
             Rgba color;
             scheme->shade(brightness, color);
