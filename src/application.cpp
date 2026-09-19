@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <thread>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -20,8 +21,46 @@ namespace{
     const unsigned long long MINIMIZED_POLL_MS=50ull;
     const unsigned long long ANIMATION_MS=2500ull;
     const double CROSSFADE_START=0.75;
+    // supersampling factor relative to the drawn pixels: as large as a core-count-scaled pixel budget allows, so bigger displays and faster machines get more samples and giant displays still run
+    double bufferScale(int cssWidth, int cssHeight){
+        unsigned int cores=std::thread::hardware_concurrency();
+        if(cores==0){
+            cores=1;
+        }
+#ifdef __EMSCRIPTEN__
+        const double pixelRatio=EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
+        const double outputPixels=static_cast<double>(cssWidth)*static_cast<double>(cssHeight)*pixelRatio*pixelRatio;
+        const double budgetPixels=static_cast<double>(cores)*350000.0;
+#else
+        const double outputPixels=static_cast<double>(cssWidth)*static_cast<double>(cssHeight);
+        const double budgetPixels=static_cast<double>(cores)*1000000.0;
+#endif
+        double scale=std::sqrt(budgetPixels/outputPixels);
+        scale=(scale>=1.0)?(std::floor(scale*4.0+0.5)/4.0):(std::floor(scale*20.0)/20.0);
+        if(scale<0.25){
+            scale=0.25;
+        }
+        if(scale>4.0){
+            scale=4.0;
+        }
+        return scale;
+    }
+    double outputPixelRatio(){
+#ifdef __EMSCRIPTEN__
+        return EM_ASM_DOUBLE({ return window.devicePixelRatio || 1; });
+#else
+        return 1.0;
+#endif
+    }
+    int bufferWidthFor(int cssWidth, int cssHeight){
+        return static_cast<int>(std::lround(static_cast<double>(cssWidth)*outputPixelRatio()*bufferScale(cssWidth, cssHeight)));
+    }
+    int bufferHeightFor(int cssWidth, int cssHeight){
+        return static_cast<int>(std::lround(static_cast<double>(cssHeight)*outputPixelRatio()*bufferScale(cssWidth, cssHeight)));
+    }
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),viewport(cssWidth, cssHeight),bufferWidth(cssWidth*RES),bufferHeight(cssHeight*RES),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),bufferWidth(bufferWidthFor(cssWidth, cssHeight)),bufferHeight(bufferHeightFor(cssWidth, cssHeight)),viewport(cssWidth, cssHeight),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+    viewport.setDeviceSize(bufferWidth, bufferHeight);
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
     schemes[2]=new AlphaScheme();
@@ -84,7 +123,7 @@ bool Application::initialize(){
         std::cerr<<"SDL_CreateTexture failed: "<<SDL_GetError()<<std::endl;
         return false;
     }
-    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
+    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, bufferWidth, bufferHeight);
     if(flightTexture==nullptr){
         std::cerr<<"SDL_CreateTexture(flight) failed: "<<SDL_GetError()<<std::endl;
         return false;
@@ -138,28 +177,23 @@ void Application::processEvents(){
 void Application::render(){
     computeDestinationRect();
     if((SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)!=0){
-        if(flightCapturePending){
-            void* lockedPixels=nullptr;
-            int lockedPitch=0;
-            if(SDL_LockTexture(texture, nullptr, &lockedPixels, &lockedPitch)){
-                SDL_UpdateTexture(flightTexture, nullptr, lockedPixels, lockedPitch);
-                flightCapturePending=false;
-            }
-        }
         SDL_Delay(MINIMIZED_POLL_MS);
         return;
+    }
+    if(flightCapturePending){
+        // copy the frame the gpu is showing into the flight texture: locking a streaming texture hands back a fresh staging buffer on direct3d, so its pixels are undefined
+        SDL_SetRenderTarget(renderer, flightTexture);
+        SDL_RenderTexture(renderer, texture, nullptr, nullptr);
+        SDL_SetRenderTarget(renderer, nullptr);
+        flightCapturePending=false;
     }
     // the simulation writes straight into the locked streaming texture, so a batch never costs an extra frame copy
     void* lockedPixels=nullptr;
     int lockedPitch=0;
     if(SDL_LockTexture(texture, nullptr, &lockedPixels, &lockedPitch)){
         unsigned char* pixels=static_cast<unsigned char*>(lockedPixels);
-        if(flightCapturePending){
-            SDL_UpdateTexture(flightTexture, nullptr, pixels, lockedPitch);
-            flightCapturePending=false;
-        }
-        const int passes=1;
-        simulation.step(passes, schemes[activeScheme], pixels, lockedPitch);
+        const double nowSeconds=SDL_GetTicks()/1000.0+0.1;
+        simulation.step(1, schemes[activeScheme], pixels, lockedPitch, nowSeconds);
         if(screenshotRequested){
             captureScreenshot(pixels, lockedPitch);
             screenshotRequested=false;
