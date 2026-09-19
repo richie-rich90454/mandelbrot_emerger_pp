@@ -177,6 +177,10 @@ void Application::render(){
     }
 }
 int Application::plannedPassCount() const{
+#ifdef __EMSCRIPTEN__
+    // the desktop never fills its frame budget - per-pass row-thread setup over a full-display buffer costs it 18-30ms - so it renders exactly one pass per frame; matching that pace keeps the escape fade identical instead of racing to black at web speeds
+    return 1;
+#else
     if(!(perPassNanos>0.0)){
         return 1;
     }
@@ -188,6 +192,7 @@ int Application::plannedPassCount() const{
         return MAX_PASSES_PER_FRAME;
     }
     return static_cast<int>(passes);
+#endif
 }
 bool Application::contains(const ViewportBounds& outer, const ViewportBounds& inner){
     return inner.xi>=outer.xi && inner.xf<=outer.xf && inner.yi>=outer.yi && inner.yf<=outer.yf;
