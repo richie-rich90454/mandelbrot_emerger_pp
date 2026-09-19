@@ -18,7 +18,16 @@ canvas{display:block;width:100%;height:100%;outline:none}
     // of the browser's default relative resolution, which would strip the prefix on the extension-less form.
     var path=location.pathname;
     var slash=path.lastIndexOf("/");
-    var base=(path.substring(slash+1).indexOf(".")>=0)?path.substring(0,slash+1):(path+"/");
+    var base;
+    if(path.charAt(path.length-1)==="/"){
+        base=path;
+    }
+    else if(path.substring(slash+1).indexOf(".")>=0){
+        base=path.substring(0,slash+1);
+    }
+    else{
+        base=path+"/";
+    }
     var booted=false;
     function boot(source){
         if(booted){
@@ -29,7 +38,12 @@ canvas{display:block;width:100%;height:100%;outline:none}
         script.src=base+source;
         document.body.appendChild(script);
     }
-    function bootThreaded(){
+    // The threaded build pre-spawns pthread workers from its own URL, and under COEP the browser requires every
+    // worker script response to repeat the COEP header - hosts normally send it only on the page, so the workers
+    // would be blocked and the app would never start. Sourcing the module from a blob keeps worker startup local,
+    // and locateFile points the wasm back at the real file. If that chain fails, the plain URL is tried and then
+    // the single-threaded module.
+    function bootThreadedPlain(){
         if(booted){
             return;
         }
@@ -41,6 +55,31 @@ canvas{display:block;width:100%;height:100%;outline:none}
             boot("fallback.js");
         };
         document.body.appendChild(script);
+    }
+    function bootThreaded(){
+        if(booted){
+            return;
+        }
+        booted=true;
+        fetch(base+"threaded.js").then(function(response){
+            if(!response.ok){
+                throw new Error("threaded.js "+response.status);
+            }
+            return response.text();
+        }).then(function(source){
+            var blobUrl=URL.createObjectURL(new Blob([source], {type: "text/javascript"}));
+            window.Module={locateFile:function(file){ return base+file; }};
+            var script=document.createElement("script");
+            script.src=blobUrl;
+            script.onerror=function(){
+                booted=false;
+                bootThreadedPlain();
+            };
+            document.body.appendChild(script);
+        }).catch(function(){
+            booted=false;
+            bootThreadedPlain();
+        });
     }
     // The threaded build needs SharedArrayBuffer, so it needs COOP/COEP headers. When the page is already
     // crossOriginIsolated (host headers or the service worker below) it runs. On localhost/HTTPS the bundled
