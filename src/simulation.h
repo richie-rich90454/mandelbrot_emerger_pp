@@ -9,7 +9,7 @@ public:
     void reframe(const Viewport& viewport);
     void step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch, double nowSeconds);
 private:
-    void renderRows(int startRow, int endRow, int passCount, double nowSeconds, const ColorScheme* scheme, unsigned char* pixels, int pitch);
+    void renderRows(int startRow, int endRow, int passCount, double nowSeconds, double toneOffset, const ColorScheme* scheme, unsigned char* pixels, int pitch);
     int width;
     int height;
     std::vector<double> z;
