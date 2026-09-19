@@ -31,7 +31,11 @@ if(EMSCRIPTEN)
         -O3
         --shell-file "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
     )
-    set_target_properties(mandelbrot_emerger PROPERTIES SUFFIX ".html" OUTPUT_NAME "index")
+    # the build tree is separate (build/web); artifacts land in build-web, which is exactly what a static host serves
+    set_target_properties(mandelbrot_emerger PROPERTIES
+        SUFFIX ".html" OUTPUT_NAME "index"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/build-web"
+    )
     add_custom_command(TARGET mandelbrot_emerger POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/web/coi-serviceworker.js" "$<TARGET_FILE_DIR:mandelbrot_emerger>"
     )
