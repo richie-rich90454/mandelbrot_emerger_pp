@@ -11,6 +11,7 @@
 namespace{
     // the reference orbit has to outlive the epoch by enough passes that rounding cannot kill it early
     const long long PROBE_REFERENCE_MARGIN=16;
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
     // spawning a worker per pass cost the desktop most of its frame budget; the threads now live for the process lifetime
     class RowPool{
     public:
@@ -87,6 +88,7 @@ namespace{
         static RowPool pool;
         return pool;
     }
+#endif
     template<class Function>
     void parallelRows(int height, const Function& function){
 #if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
