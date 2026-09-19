@@ -45,6 +45,27 @@ ViewportBounds Viewport::planAutoZoom(double centerX, double centerY, double div
     target.xf=centerX+widthSpan*0.5;
     target.yi=centerY-heightSpan*0.5;
     target.yf=centerY+heightSpan*0.5;
+    // slide a window that fits back inside the current bounds so every contained zoom can glide instead of crossing through black
+    if(widthSpan<boundXf-boundXi){
+        if(target.xi<boundXi){
+            target.xf+=boundXi-target.xi;
+            target.xi=boundXi;
+        }
+        else if(target.xf>boundXf){
+            target.xi-=target.xf-boundXf;
+            target.xf=boundXf;
+        }
+    }
+    if(heightSpan<boundYf-boundYi){
+        if(target.yi<boundYi){
+            target.yf+=boundYi-target.yi;
+            target.yi=boundYi;
+        }
+        else if(target.yf>boundYf){
+            target.yi-=target.yf-boundYf;
+            target.yf=boundYf;
+        }
+    }
     return target;
 }
 void Viewport::setBounds(const ViewportBounds& bounds){
