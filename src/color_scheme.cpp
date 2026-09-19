@@ -98,3 +98,28 @@ void IceScheme::shade(double brightness, Rgba& out) const{
 const char* IceScheme::name() const{
     return "ice";
 }
+// amber-to-white ramp: bright, high-contrast and monotone in luminance, precomputed so a pixel costs a table read
+AmberScheme::AmberScheme():ColorScheme(){
+    for(int i=0; i<256; i++){
+        const double t=static_cast<double>(i)/255.0;
+        ramp[i].r=clampChannel(255.0*std::pow(t, 0.45));
+        ramp[i].g=clampChannel(255.0*std::pow(t, 0.6));
+        ramp[i].b=clampChannel(255.0*std::pow(t, 1.2));
+        ramp[i].a=255;
+    }
+}
+AmberScheme::~AmberScheme(){
+}
+void AmberScheme::shade(double brightness, Rgba& out) const{
+    int index=static_cast<int>(brightness+0.5);
+    if(index<0){
+        index=0;
+    }
+    if(index>255){
+        index=255;
+    }
+    out=ramp[index];
+}
+const char* AmberScheme::name() const{
+    return "amber";
+}
