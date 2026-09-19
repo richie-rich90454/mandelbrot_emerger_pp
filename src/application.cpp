@@ -13,15 +13,17 @@
 namespace{
     const unsigned long long AUTO_ZOOM_INTERVAL_MS=6000ull;
     const long long AUTO_ZOOM_MIN_PASSES=600;
+    const long long AUTO_ZOOM_MAX_PASSES=1088;
     const int PROBE_SAMPLES=256;
-    const int PROBE_MAX_ITER=512;
-    const int PROBE_MIN_TARGET_ITER=16;
+    const int PROBE_HORIZON=4096;
+    const long long PROBE_TARGET_BUDGET=1024;
+    const long long PROBE_MIN_TARGET_ITER=16;
     const double AUTO_ZOOM_DIVISOR=3.0;
-    const double AUTO_ZOOM_MIN_SPAN=1e-11;
     const double ZOOM_OUT_FACTOR=2.0;
     const unsigned long long MINIMIZED_POLL_MS=50ull;
     const unsigned long long ANIMATION_MS=2500ull;
     const double CROSSFADE_START=0.75;
+    const long long REFERENCE_PASS_LIMIT=1ll<<20;
     // supersampling factor relative to the drawn pixels: as large as a core-count-scaled pixel budget allows, so bigger displays and faster machines get more samples and giant displays still run
     double bufferScale(int cssWidth, int cssHeight){
         unsigned int cores=std::thread::hardware_concurrency();
@@ -60,7 +62,7 @@ namespace{
         return static_cast<int>(std::lround(static_cast<double>(cssHeight)*outputPixelRatio()*bufferScale(cssWidth, cssHeight)));
     }
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),bufferWidth(bufferWidthFor(cssWidth, cssHeight)),bufferHeight(bufferHeightFor(cssWidth, cssHeight)),viewport(cssWidth, cssHeight),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(6),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),bufferWidth(bufferWidthFor(cssWidth, cssHeight)),bufferHeight(bufferHeightFor(cssWidth, cssHeight)),viewport(cssWidth, cssHeight),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(6),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(),pendingTarget(),pendingRefU(0.5),pendingRefV(0.5),lastRefU(0.5),lastRefV(0.5),nextZoomPasses(AUTO_ZOOM_MIN_PASSES),referenceRebases(0),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     viewport.setDeviceSize(bufferWidth, bufferHeight);
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
@@ -135,7 +137,7 @@ bool Application::initialize(){
 void Application::run(){
     running=true;
     lastReframeTicks=SDL_GetTicks();
-    simulation.reframe(viewport);
+    simulation.reframe(viewport, lastRefU, lastRefV);
     viewport.log(std::cout);
     std::cout<<"[auto] engaged (press A to toggle, click to take manual control)"<<std::endl;
 #ifdef __EMSCRIPTEN__
@@ -218,12 +220,27 @@ void Application::render(){
     if(!screenshotPixels.empty()){
         saveScreenshot();
     }
+    if(simulation.referenceEscaped()){
+        handleReferenceEscape();
+    }
+    else if(simulation.passesSinceReframe()>REFERENCE_PASS_LIMIT){
+        simulation.reframe(viewport, lastRefU, lastRefV);
+        lastReframeTicks=SDL_GetTicks();
+        std::cout<<"[ref] reference pass limit reached - reference orbit reset"<<std::endl;
+    }
 }
 bool Application::contains(const ViewportBounds& outer, const ViewportBounds& inner){
     return inner.xi>=outer.xi && inner.xf<=outer.xf && inner.yi>=outer.yi && inner.yf<=outer.yf;
 }
 bool Application::validBounds(const ViewportBounds& bounds){
-    return std::isfinite(bounds.xi) && std::isfinite(bounds.xf) && std::isfinite(bounds.yi) && std::isfinite(bounds.yf) && bounds.xf>bounds.xi && bounds.yf>bounds.yi;
+    return bounds.xf>bounds.xi && bounds.yf>bounds.yi;
+}
+ViewportBounds Application::clampToInitial(const ViewportBounds& bounds) const{
+    ViewportBounds initial=viewport.initialBounds();
+    if(bounds.xi<initial.xi || bounds.xf>initial.xf || bounds.yi<initial.yi || bounds.yf>initial.yf){
+        return initial;
+    }
+    return bounds;
 }
 void Application::onMouseButtonDown(const SDL_Event& event){
     if(event.button.button!=SDL_BUTTON_LEFT){
@@ -284,13 +301,13 @@ void Application::toggleAutoZoom(){
     lastReframeTicks=SDL_GetTicks();
     std::cout<<"[auto] "<<(autoZoomEnabled?"engaged":"disengaged")<<std::endl;
 }
-// probes random points in the current bounds and steers toward slow escapers, which hug the filament structure; the precision floor restarts full view so generation cycles forever
 void Application::maybeAutoZoom(){
     if(!autoZoomEnabled || clicker || animating){
         return;
     }
-    // a zoom only starts once the view has resolved enough passes to show its structure, never on a half-drawn frame
-    if(simulation.passesSinceReframe()<AUTO_ZOOM_MIN_PASSES){
+    // a zoom only starts once the view has resolved enough passes to show its structure, never on a half-drawn frame;
+    // the bar rises with depth so slow-escaped detail is visible before the camera moves on
+    if(simulation.passesSinceReframe()<nextZoomPasses){
         return;
     }
     if(SDL_GetTicks()-lastReframeTicks<AUTO_ZOOM_INTERVAL_MS){
@@ -298,64 +315,104 @@ void Application::maybeAutoZoom(){
     }
     performAutoZoom();
 }
+// probes read survival off the reference orbit in double, so they resolve structure at any depth. The camera
+// follows the slowest escaper inside the budget (visible before the epoch ends) while the reference orbit is
+// anchored to a full-horizon survivor, or failing that the slowest escaper of all: the wait never outlives that
+// point's own lifetime, so the perturbation stays valid for the whole epoch
 void Application::performAutoZoom(){
-    double bestScore=-1.0;
-    double bestX=(viewport.getXi()+viewport.getXf())*0.5;
-    double bestY=(viewport.getYi()+viewport.getYf())*0.5;
-    std::uniform_real_distribution<double> unit(0.0, 1.0);
-    for(int s=0; s<PROBE_SAMPLES; s++){
-        double u=unit(randomEngine);
-        double v=unit(randomEngine);
-        double cx=viewport.getXi()+u*(viewport.getXf()-viewport.getXi());
-        double cy=viewport.getYi()+v*(viewport.getYf()-viewport.getYi());
-        double zr=cx;
-        double zi=cy;
-        int iterations=0;
-        while(iterations<PROBE_MAX_ITER && zr*zr+zi*zi<=4.0){
-            double nr=zr*zr-zi*zi+cx;
-            zi=2.0*zr*zi+cy;
-            zr=nr;
-            iterations++;
-        }
-        if(iterations<PROBE_MAX_ITER && static_cast<double>(iterations)>bestScore){
-            bestScore=static_cast<double>(iterations);
-            bestX=cx;
-            bestY=cy;
-        }
-    }
-    double ySpan=std::fabs(viewport.getYf()-viewport.getYi());
-    double outerLimit=(2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth))*64.0;
+    ProbeResult probe=simulation.probeStructure(PROBE_SAMPLES, PROBE_HORIZON, PROBE_TARGET_BUDGET, PROBE_MIN_TARGET_ITER, randomEngine);
     ViewportBounds target=viewport.getBounds();
-    if(!(ySpan>=AUTO_ZOOM_MIN_SPAN) || ySpan/AUTO_ZOOM_DIVISOR<AUTO_ZOOM_MIN_SPAN){
-        target.xi=-2.0;
-        target.xf=2.0;
-        target.yi=-2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
-        target.yf=2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
-        std::cout<<"[auto] precision floor reached - restarting cycle"<<std::endl;
+    double referenceU=0.5;
+    double referenceV=0.5;
+    long long requiredPasses=AUTO_ZOOM_MIN_PASSES;
+    double targetU=0.5;
+    double targetV=0.5;
+    bool haveTarget=false;
+    if(probe.hasStructure){
+        haveTarget=true;
+        targetU=probe.targetU;
+        targetV=probe.targetV;
     }
-    else if(bestScore>=PROBE_MIN_TARGET_ITER){
-        target=viewport.planAutoZoom(bestX, bestY, AUTO_ZOOM_DIVISOR);
+    else if(probe.hasSlowest){
+        haveTarget=true;
+        targetU=probe.slowestU;
+        targetV=probe.slowestV;
+    }
+    else if(probe.hasSurvivor){
+        haveTarget=true;
+        targetU=probe.survivorU;
+        targetV=probe.survivorV;
+    }
+    if(!haveTarget){
+        // no slow escaper promises structure: pull back, bounded by the full view, instead of diving into a dead zone
+        target=clampToInitial(viewport.scaledBounds(ZOOM_OUT_FACTOR));
+        nextZoomPasses=requiredPasses;
+        std::cout<<"[auto] no structure nearby - zooming out"<<std::endl;
+        beginTransition(target, referenceU, referenceV);
+        return;
+    }
+    if(probe.hasSurvivor){
+        requiredPasses=AUTO_ZOOM_MAX_PASSES;
     }
     else{
-        // no candidate escaped slowly enough to promise structure: pull back out instead of diving into interior or exterior dead zones
-        if(ySpan>=outerLimit){
-            target.xi=-2.0;
-            target.xf=2.0;
-            target.yi=-2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
-            target.yf=2.0*static_cast<double>(windowHeight)/static_cast<double>(windowWidth);
-            std::cout<<"[auto] empty region - restarting cycle"<<std::endl;
-        }
-        else{
-            target=viewport.planAutoZoom((viewport.getXi()+viewport.getXf())*0.5, (viewport.getYi()+viewport.getYf())*0.5, 1.0/ZOOM_OUT_FACTOR);
-            std::cout<<"[auto] no structure nearby - zooming out"<<std::endl;
-        }
+        requiredPasses=std::min<long long>(AUTO_ZOOM_MAX_PASSES, std::max<long long>(64, probe.slowestIterations-16));
     }
-    beginTransition(target);
+    Big centerX=viewport.planeAtUnitX(targetU);
+    Big centerY=viewport.planeAtUnitY(targetV);
+    target=viewport.planAutoZoom(centerX, centerY, AUTO_ZOOM_DIVISOR);
+    double referencePointU=probe.hasSurvivor?probe.survivorU:probe.slowestU;
+    double referencePointV=probe.hasSurvivor?probe.survivorV:probe.slowestV;
+    Big referenceX=viewport.planeAtUnitX(referencePointU);
+    Big referenceY=viewport.planeAtUnitY(referencePointV);
+    double width=Big::sub(target.xf, target.xi).toDouble();
+    double height=Big::sub(target.yf, target.yi).toDouble();
+    double dx=Big::sub(referenceX, target.xi).toDouble();
+    double dy=Big::sub(referenceY, target.yi).toDouble();
+    if(width>0.0 && height>0.0 && std::isfinite(dx) && std::isfinite(dy)){
+        referenceU=dx/width;
+        referenceV=dy/height;
+    }
+    nextZoomPasses=requiredPasses;
+    beginTransition(target, referenceU, referenceV);
+}
+// a reference orbit that escapes mid-epoch invalidates the perturbation for still-active pixels; rebase onto the
+// pixel closest to the set, and if that keeps dying, widen the view so fresh territory enters the probe
+void Application::handleReferenceEscape(){
+    if(!simulation.referenceEscaped()){
+        return;
+    }
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    double referenceU=0.5;
+    double referenceV=0.5;
+    if(referenceRebases==0){
+        if(!simulation.bestReferenceOffset(referenceU, referenceV)){
+            referenceU=unit(randomEngine);
+            referenceV=unit(randomEngine);
+        }
+        simulation.reframe(viewport, referenceU, referenceV);
+        std::cout<<"[ref] reference orbit escaped - rebasing onto a longer-lived point"<<std::endl;
+        referenceRebases=1;
+    }
+    else{
+        viewport.setBounds(clampToInitial(viewport.scaledBounds(ZOOM_OUT_FACTOR)));
+        referenceU=unit(randomEngine);
+        referenceV=unit(randomEngine);
+        simulation.reframe(viewport, referenceU, referenceV);
+        std::cout<<"[ref] reference orbit escaped again - widening view and rebasing"<<std::endl;
+        referenceRebases=0;
+    }
+    lastRefU=referenceU;
+    lastRefV=referenceV;
+    viewport.log(std::cout);
+    lastReframeTicks=SDL_GetTicks();
 }
 // dives glide a magnifying crop across the pre-zoom frame while the live field resolves at the destination, with one reframe total and no simulation resets mid-flight; pull-backs and targets the frame cannot cover cross through black since nothing beyond the current view is computable
 void Application::applyPendingTarget(){
     viewport.setBounds(pendingTarget);
-    simulation.reframe(viewport);
+    simulation.reframe(viewport, pendingRefU, pendingRefV);
+    lastRefU=pendingRefU;
+    lastRefV=pendingRefV;
+    referenceRebases=0;
     viewport.log(std::cout);
     lastReframeTicks=SDL_GetTicks();
 }
@@ -370,7 +427,7 @@ void Application::finishAnimation(){
     animating=false;
     SDL_SetTextureAlphaMod(texture, 255);
 }
-void Application::beginTransition(const ViewportBounds& target){
+void Application::beginTransition(const ViewportBounds& target, double referenceU, double referenceV){
     finishAnimation();
     ViewportBounds from=viewport.getBounds();
     // a degenerate selection (a double click, for example) has nothing to show and must not reset the running field
@@ -379,7 +436,10 @@ void Application::beginTransition(const ViewportBounds& target){
     }
     animationStartTicks=SDL_GetTicks();
     pendingTarget=target;
+    pendingRefU=referenceU;
+    pendingRefV=referenceV;
     pendingApplied=false;
+    referenceRebases=0;
     // every target the captured frame contains glides - zooms magnify its crop and equal-span selections pan it - while anything wider or offset crosses through black
     if(contains(from, target)){
         flightCapturePending=true;
@@ -387,7 +447,9 @@ void Application::beginTransition(const ViewportBounds& target){
         animationMode=1;
         animating=true;
         viewport.setBounds(target);
-        simulation.reframe(viewport);
+        simulation.reframe(viewport, referenceU, referenceV);
+        lastRefU=referenceU;
+        lastRefV=referenceV;
         viewport.log(std::cout);
         lastReframeTicks=SDL_GetTicks();
     }
@@ -405,23 +467,41 @@ void Application::drawDive(const SDL_FRect& destination){
         return;
     }
     double e=t*t*(3.0-2.0*t);
-    double fromSpan=animFrom.yf-animFrom.yi;
-    double fromWidth=animFrom.xf-animFrom.xi;
-    double fromCx=(animFrom.xi+animFrom.xf)*0.5;
-    double fromCy=(animFrom.yi+animFrom.yf)*0.5;
     ViewportBounds to=viewport.getBounds();
-    double toSpan=to.yf-to.yi;
-    double span=std::exp((1.0-e)*std::log(fromSpan)+e*std::log(toSpan));
-    double cx=(1.0-e)*fromCx+e*(to.xi+(to.xf-to.xi)*0.5);
-    double cy=(1.0-e)*fromCy+e*(to.yi+(to.yf-to.yi)*0.5);
-    double w=span*(fromWidth/fromSpan);
+    double fromWidth=Big::sub(animFrom.xf, animFrom.xi).toDouble();
+    double fromHeight=Big::sub(animFrom.yf, animFrom.yi).toDouble();
+    double toHeight=Big::sub(to.yf, to.yi).toDouble();
+    // underflowed spans cannot be cropped as doubles; land on the fresh field directly instead of mis-cropping
+    if(!(fromWidth>0.0) || !(fromHeight>0.0) || !(toHeight>0.0)){
+        animating=false;
+        SDL_SetTextureAlphaMod(texture, 255);
+        SDL_RenderTexture(renderer, texture, nullptr, &destination);
+        return;
+    }
+    double toWidth=Big::sub(to.xf, to.xi).toDouble();
+    if(!(toWidth>0.0)){
+        animating=false;
+        SDL_SetTextureAlphaMod(texture, 255);
+        SDL_RenderTexture(renderer, texture, nullptr, &destination);
+        return;
+    }
+    double span=std::exp((1.0-e)*std::log(fromHeight)+e*std::log(toHeight));
+    Big fromCenterX=Big::mul(Big::add(animFrom.xi, animFrom.xf), 0.5);
+    Big fromCenterY=Big::mul(Big::add(animFrom.yi, animFrom.yf), 0.5);
+    Big toCenterX=Big::mul(Big::add(to.xi, to.xf), 0.5);
+    Big toCenterY=Big::mul(Big::add(to.yi, to.yf), 0.5);
+    Big centerX=Big::add(fromCenterX, Big::mul(Big::sub(toCenterX, fromCenterX), e));
+    Big centerY=Big::add(fromCenterY, Big::mul(Big::sub(toCenterY, fromCenterY), e));
+    double w=span*(fromWidth/fromHeight);
+    double centerXFrac=Big::sub(centerX, animFrom.xi).toDouble()/fromWidth;
+    double centerYFrac=Big::sub(animFrom.yf, centerY).toDouble()/fromHeight;
     float texW=static_cast<float>(bufferWidth);
     float texH=static_cast<float>(bufferHeight);
     SDL_FRect src;
-    src.x=texW*static_cast<float>((cx-w*0.5-animFrom.xi)/fromWidth);
-    src.y=texH*static_cast<float>((animFrom.yf-(cy+span*0.5))/fromSpan);
+    src.x=texW*static_cast<float>(centerXFrac-w*0.5/fromWidth);
+    src.y=texH*static_cast<float>(centerYFrac-span*0.5/fromHeight);
     src.w=texW*static_cast<float>(w/fromWidth);
-    src.h=texH*static_cast<float>(span/fromSpan);
+    src.h=texH*static_cast<float>(span/fromHeight);
     if(src.x<0.0f){
         src.x=0.0f;
     }
