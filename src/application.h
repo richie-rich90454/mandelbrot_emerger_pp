@@ -37,7 +37,7 @@ private:
     void computeDestinationRect();
     static bool contains(const ViewportBounds& outer, const ViewportBounds& inner);
     static bool validBounds(const ViewportBounds& bounds);
-    static const int SCHEME_COUNT=6;
+    static const int SCHEME_COUNT=7;
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* texture;
