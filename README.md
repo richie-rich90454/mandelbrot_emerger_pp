@@ -144,7 +144,8 @@ cmake --build build --config Release
 ## Implementation notes
 
 - Every frame advances each point by exactly one iteration - like the original - on both the desktop and the browser, so the fade, the zoom glides and the autopilot cadence are identical everywhere; escape brightness is computed against the same monotonic frame counter.
-- Row threads are pooled for the process lifetime instead of being spawned per pass, and the desktop prefers the OpenGL backend, whose streaming-texture upload avoids the per-frame staging allocation that made Direct3D 11 miss the 60fps budget.
+- Row threads are pooled for the process lifetime instead of being spawned per pass, and the desktop prefers Direct3D 12, which keeps the streaming upload inside the 60fps budget (Direct3D 11 allocates a staging texture on every lock and misses it).
+- Pixels are written in the warm ramp the program has always displayed - the scheme's channels recombined so bright points glow red before fading to white - with the recombination baked into the buffer, so the rendered frame, the browser and the saved PNG show the same colors.
 - Iteration math uses IEEE doubles, exactly like JavaScript numbers, so point trajectories are bit-for-bit identical to the original.
 - The simulation writes straight into the locked streaming texture, so a frame never pays for an intermediate pixel copy, and it stores only each point's current `z` and its escape frame: the seed `c` comes from per-row and per-column tables instead of a second full-frame array, which halves both the memory footprint and the per-pass memory traffic.
 - Screenshots are written by a dependency-free PNG encoder (stored deflate blocks).
