@@ -13,24 +13,49 @@ canvas{display:block;width:100%;height:100%;outline:none}
 <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
 <script>
 (function(){
+    // The page can be reached as a directory ("/app/"), an index file ("/app/index.html") or an extension-less
+    // route ("/app"), under any mount prefix, so every asset resolves against this page's own directory instead
+    // of the browser's default relative resolution, which would strip the prefix on the extension-less form.
+    var path=location.pathname;
+    var slash=path.lastIndexOf("/");
+    var base=(path.substring(slash+1).indexOf(".")>=0)?path.substring(0,slash+1):(path+"/");
+    var booted=false;
     function boot(source){
+        if(booted){
+            return;
+        }
+        booted=true;
         var script=document.createElement("script");
-        script.src=source;
+        script.src=base+source;
         document.body.appendChild(script);
     }
-    // The threaded build needs SharedArrayBuffer, which needs COOP/COEP headers. When the host already sends
-    // them (or the bundled service worker has produced them) this page is crossOriginIsolated and boots the
-    // threaded module. On localhost/HTTPS the service worker can inject the headers and reload once. Where
-    // isolation is impossible - plain HTTP, file://, private mode, no service workers - the single-threaded
-    // module runs instead. Either way the site works from any static host with no server configuration.
+    function bootThreaded(){
+        if(booted){
+            return;
+        }
+        booted=true;
+        var script=document.createElement("script");
+        script.src=base+"threaded.js";
+        script.onerror=function(){
+            booted=false;
+            boot("fallback.js");
+        };
+        document.body.appendChild(script);
+    }
+    // The threaded build needs SharedArrayBuffer, so it needs COOP/COEP headers. When the page is already
+    // crossOriginIsolated (host headers or the service worker below) it runs. On localhost/HTTPS the bundled
+    // worker injects those headers and reloads once, but only when this page falls inside its scope: a route
+    // such as "/app" without the trailing slash is outside the "/app/" scope and would reload forever, so it
+    // goes straight to the single-threaded build. Everywhere else - plain HTTP, file://, private mode, browsers
+    // without service workers - the single-threaded module runs too. No server configuration is ever required.
     if(window.crossOriginIsolated){
-        boot("threaded.js");
+        bootThreaded();
         return;
     }
-    if(window.isSecureContext && "serviceWorker" in navigator){
+    if(window.isSecureContext && "serviceWorker" in navigator && path.indexOf(base)===0){
         var fallbackTimer=setTimeout(function(){ boot("fallback.js"); }, 4000);
         var script=document.createElement("script");
-        script.src="coi-serviceworker.js";
+        script.src=base+"coi-serviceworker.js";
         script.onerror=function(){
             clearTimeout(fallbackTimer);
             boot("fallback.js");
