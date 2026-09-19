@@ -36,9 +36,21 @@ if(EMSCRIPTEN)
         SUFFIX ".html" OUTPUT_NAME "index"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/build-web"
     )
-    add_custom_command(TARGET mandelbrot_emerger POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/web/coi-serviceworker.js" "$<TARGET_FILE_DIR:mandelbrot_emerger>"
+    # the service worker is a hand-written dist file, not a linker output, so it must not ride on the link step:
+    # a POST_BUILD copy is skipped whenever ninja finds the target up to date, which would leave a wiped or
+    # manually deleted build-web without it. This target runs on every build of the executable, restores the
+    # directory if needed, copies unconditionally and then verifies the copy byte for byte
+    set(MANDELBROT_WEB_DIST "${CMAKE_CURRENT_SOURCE_DIR}/build-web")
+    set(MANDELBROT_COI_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/web/coi-serviceworker.js")
+    add_custom_target(mandelbrot_web_dist
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MANDELBROT_WEB_DIST}"
+        COMMAND ${CMAKE_COMMAND} -E copy "${MANDELBROT_COI_SOURCE}" "${MANDELBROT_WEB_DIST}/coi-serviceworker.js"
+        COMMAND ${CMAKE_COMMAND} -E compare_files "${MANDELBROT_COI_SOURCE}" "${MANDELBROT_WEB_DIST}/coi-serviceworker.js"
+        DEPENDS "${MANDELBROT_COI_SOURCE}"
+        COMMENT "Staging coi-serviceworker.js into build-web"
+        VERBATIM
     )
+    add_dependencies(mandelbrot_emerger mandelbrot_web_dist)
 else()
     include(FetchContent)
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
