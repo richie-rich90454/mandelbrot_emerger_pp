@@ -1,6 +1,8 @@
 #include "simulation.h"
 #include "viewport.h"
 #include "color_scheme.h"
+#include <bit>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
@@ -92,9 +94,10 @@ namespace{
 #endif
     }
 }
-Simulation::Simulation(int deviceWidth, int deviceHeight):width(deviceWidth),height(deviceHeight),z(static_cast<std::size_t>(width)*static_cast<std::size_t>(height)*2u, 0.0),diverge(static_cast<std::size_t>(width)*static_cast<std::size_t>(height), 0.0),planeX(static_cast<std::size_t>(width), 0.0),planeY(static_cast<std::size_t>(height), 0.0){
+Simulation::Simulation(int deviceWidth, int deviceHeight):width(deviceWidth),height(deviceHeight),z(static_cast<std::size_t>(width)*static_cast<std::size_t>(height)*2u, 0.0),diverge(static_cast<std::size_t>(width)*static_cast<std::size_t>(height), 0.0),planeX(static_cast<std::size_t>(width), 0.0),planeY(static_cast<std::size_t>(height), 0.0),toneTable(1, 0.0),frameIndex(0),reframeIndex(0){
 }
 void Simulation::reframe(const Viewport& viewport){
+    reframeIndex=frameIndex;
     for(int x=0; x<width; x++){
         planeX[static_cast<std::size_t>(x)]=viewport.planeFromDeviceX(static_cast<double>(x));
     }
@@ -117,16 +120,26 @@ void Simulation::reframe(const Viewport& viewport){
     });
 }
 // one rendered frame's worth of lockstep iterations: each not-yet-escaped point advances passCount times,
-// escapes are stamped with the wall-clock time that fails the magnitude test, and colors are computed once
-// per frame from each point's escape age - an exact and machine-independent version of the original pass ratio
-void Simulation::step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch, double nowSeconds){
-    // 255*recency/(recency+0.18) with recency = escapeTime/now, folded into one division per pixel
-    const double toneOffset=0.18*nowSeconds;
-    parallelRows(height, [this, passCount, nowSeconds, toneOffset, scheme, pixels, pitch](int startRow, int endRow){
-        renderRows(startRow, endRow, passCount, nowSeconds, toneOffset, scheme, pixels, pitch);
+// escapes are stamped with the pass that fails the magnitude test, and colors are computed once per frame
+// from a lookup table of the escape count, so the per-pixel cost is a load and a multiply
+void Simulation::step(int passCount, const ColorScheme* scheme, unsigned char* pixels, int pitch){
+    const long long baseIndex=frameIndex;
+    frameIndex+=passCount;
+    const long long span=frameIndex-reframeIndex;
+    while(static_cast<long long>(toneTable.size())<=span){
+        const std::size_t n=toneTable.size();
+        const double bandBase=std::ldexp(1.0, static_cast<int>(std::bit_width(static_cast<unsigned int>(n)))-1);
+        toneTable.push_back(255.0*(0.25+0.75*((static_cast<double>(n)-bandBase)/bandBase))*std::sqrt(std::sqrt(static_cast<double>(n))));
+    }
+    const double toneScale=std::pow(static_cast<double>(span), -0.25);
+    parallelRows(height, [this, passCount, baseIndex, toneScale, scheme, pixels, pitch](int startRow, int endRow){
+        renderRows(startRow, endRow, passCount, baseIndex, toneScale, scheme, pixels, pitch);
     });
 }
-void Simulation::renderRows(int startRow, int endRow, int passCount, double nowSeconds, double toneOffset, const ColorScheme* scheme, unsigned char* pixels, int pitch){
+long long Simulation::passesSinceReframe() const{
+    return frameIndex-reframeIndex;
+}
+void Simulation::renderRows(int startRow, int endRow, int passCount, long long baseIndex, double toneScale, const ColorScheme* scheme, unsigned char* pixels, int pitch){
     for(int y=startRow; y<endRow; y++){
         const std::size_t row=static_cast<std::size_t>(y);
         double* rowZ=z.data()+row*static_cast<std::size_t>(width)*2u;
@@ -135,8 +148,8 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, double nowS
         const double cy=planeY[row];
         for(int x=0; x<width; x++){
             const std::size_t column=static_cast<std::size_t>(x);
-            double escapeTime=rowDiverge[column];
-            if(escapeTime==0.0){
+            double escapeCount=rowDiverge[column];
+            if(escapeCount==0.0){
                 double re=rowZ[column*2u];
                 double im=rowZ[column*2u+1u];
                 const double cx=planeX[column];
@@ -147,20 +160,21 @@ void Simulation::renderRows(int startRow, int endRow, int passCount, double nowS
                         re=nextRe;
                     }
                     else{
-                        escapeTime=nowSeconds;
-                        rowDiverge[column]=escapeTime;
+                        escapeCount=static_cast<double>(baseIndex+pass-reframeIndex);
+                        rowDiverge[column]=escapeCount;
                         break;
                     }
                 }
-                if(escapeTime==0.0){
+                if(escapeCount==0.0){
                     rowZ[column*2u]=re;
                     rowZ[column*2u+1u]=im;
                 }
             }
             double brightness=0.0;
-            if(escapeTime!=0.0){
-                // the rational curve lifts the fading tail for visibility while keeping the brightest points short of pure white
-                brightness=255.0*escapeTime/(escapeTime+toneOffset);
+            if(escapeCount!=0.0){
+                // table holds band(count)*count^0.25; scaling by span^-0.25 gives the gentle fade, and the ramp
+                // within each octave of the count lays the escape-time level sets over it so filaments stay legible
+                brightness=toneTable[static_cast<std::size_t>(escapeCount)]*toneScale;
             }
             Rgba color;
             scheme->shade(brightness, color);
