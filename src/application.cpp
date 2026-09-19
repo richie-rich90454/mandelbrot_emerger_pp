@@ -52,8 +52,8 @@ bool Application::initialize(){
     const SDL_WindowFlags windowFlags=SDL_WINDOW_RESIZABLE;
 #else
     const SDL_WindowFlags windowFlags=SDL_WINDOW_FULLSCREEN|SDL_WINDOW_BORDERLESS;
-    // direct3d11 allocates and maps a full-frame staging texture on every lock, serializing the frame; the opengl backend uploads in place and holds 60fps
-    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+    // direct3d11 allocates a full-frame staging texture on every lock and opengl's upload spikes past the frame budget; direct3d12 keeps the desktop at a stable 60fps
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d12");
 #endif
     window=SDL_CreateWindow("Mandelbrot Emerger", windowWidth, windowHeight, windowFlags);
     if(window==nullptr){
@@ -64,6 +64,10 @@ bool Application::initialize(){
     renderer=SDL_CreateRenderer(window, nullptr);
 #else
     renderer=SDL_CreateRenderer(window, nullptr);
+    if(renderer==nullptr){
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+        renderer=SDL_CreateRenderer(window, nullptr);
+    }
     if(renderer==nullptr){
         SDL_ResetHint(SDL_HINT_RENDER_DRIVER);
         renderer=SDL_CreateRenderer(window, nullptr);
