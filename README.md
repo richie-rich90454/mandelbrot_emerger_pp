@@ -143,7 +143,8 @@ cmake --build build --config Release
 
 ## Implementation notes
 
-- Iteration runs in lockstep batches sized to the per-frame time budget (always at least one pass per frame), so iteration speed scales with available CPU instead of vsync; escape brightness uses the same monotonic frame counter, keeping fade ratios consistent at any speed. Colors are computed once per frame against the post-batch counter, which is bit-identical to rendering every individual pass.
+- Every frame advances each point by exactly one iteration - like the original - on both the desktop and the browser, so the fade, the zoom glides and the autopilot cadence are identical everywhere; escape brightness is computed against the same monotonic frame counter.
+- Row threads are pooled for the process lifetime instead of being spawned per pass, and the desktop prefers the OpenGL backend, whose streaming-texture upload avoids the per-frame staging allocation that made Direct3D 11 miss the 60fps budget.
 - Iteration math uses IEEE doubles, exactly like JavaScript numbers, so point trajectories are bit-for-bit identical to the original.
 - The simulation writes straight into the locked streaming texture, so a frame never pays for an intermediate pixel copy, and it stores only each point's current `z` and its escape frame: the seed `c` comes from per-row and per-column tables instead of a second full-frame array, which halves both the memory footprint and the per-pass memory traffic.
 - Screenshots are written by a dependency-free PNG encoder (stored deflate blocks).
