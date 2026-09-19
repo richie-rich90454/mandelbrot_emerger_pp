@@ -1,4 +1,8 @@
 # Mandelbrot Emerger (C++20 / SDL3)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
+![SDL3](https://img.shields.io/badge/SDL3-latest-green)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Web-green)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 A faithful native port of [drasimov/mandelbrot-emerger](https://github.com/drasimov/mandelbrot-emerger) (p5.js) as an SDL3 desktop application.
 
