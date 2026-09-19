@@ -1,32 +1,94 @@
 #include "simulation.h"
 #include "viewport.h"
 #include "color_scheme.h"
+#include <condition_variable>
 #include <cstddef>
+#include <functional>
+#include <mutex>
 #include <thread>
 namespace{
+    // spawning a worker per pass cost the desktop most of its frame budget; the threads now live for the process lifetime
+    class RowPool{
+    public:
+        RowPool(){
+            unsigned int count=std::thread::hardware_concurrency();
+            if(count==0){
+                count=1;
+            }
+            workers.reserve(count);
+            for(unsigned int i=0; i<count; i++){
+                workers.emplace_back([this, i]{ loop(i); });
+            }
+        }
+        ~RowPool(){
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                stopping=true;
+            }
+            wake.notify_all();
+            for(std::size_t i=0; i<workers.size(); i++){
+                workers[i].join();
+            }
+        }
+        void run(int height, const std::function<void(int, int)>& task){
+            if(workers.empty() || height<=0){
+                task(0, height);
+                return;
+            }
+            std::unique_lock<std::mutex> lock(mutex);
+            current=task;
+            rows=height;
+            remaining=static_cast<int>(workers.size());
+            generation++;
+            wake.notify_all();
+            finished.wait(lock, [this]{ return remaining==0; });
+            current=nullptr;
+        }
+    private:
+        void loop(unsigned int index){
+            std::unique_lock<std::mutex> lock(mutex);
+            unsigned long long seen=0;
+            while(true){
+                wake.wait(lock, [this, seen]{ return stopping || generation!=seen; });
+                if(stopping){
+                    return;
+                }
+                seen=generation;
+                const int workerCount=static_cast<int>(workers.size());
+                const int chunk=rows/workerCount;
+                const int start=static_cast<int>(index)*chunk;
+                const int end=(index==static_cast<unsigned int>(workerCount)-1)?rows:start+chunk;
+                const std::function<void(int, int)> task=current;
+                lock.unlock();
+                if(start<end){
+                    task(start, end);
+                }
+                lock.lock();
+                if(--remaining==0){
+                    finished.notify_one();
+                }
+            }
+        }
+        std::vector<std::thread> workers;
+        std::mutex mutex;
+        std::condition_variable wake;
+        std::condition_variable finished;
+        std::function<void(int, int)> current;
+        int rows=0;
+        int remaining=0;
+        unsigned long long generation=0;
+        bool stopping=false;
+    };
+    RowPool& rowPool(){
+        static RowPool pool;
+        return pool;
+    }
     template<class Function>
     void parallelRows(int height, const Function& function){
 #if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
         function(0, height);
 #else
-        unsigned int threadCount=std::thread::hardware_concurrency();
-        if(threadCount==0){
-            threadCount=1;
-        }
-        if(threadCount>static_cast<unsigned int>(height)){
-            threadCount=static_cast<unsigned int>(height);
-        }
-        int chunk=height/static_cast<int>(threadCount);
-        std::vector<std::thread> workers;
-        workers.reserve(threadCount);
-        for(unsigned int t=0; t<threadCount; t++){
-            int startRow=static_cast<int>(t)*chunk;
-            int endRow=(t==threadCount-1)?height:startRow+chunk;
-            workers.push_back(std::thread(function, startRow, endRow));
-        }
-        for(std::size_t t=0; t<workers.size(); t++){
-            workers[t].join();
-        }
+        rowPool().run(height, function);
 #endif
     }
 }
