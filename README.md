@@ -2,7 +2,7 @@
 
 A faithful native port of [drasimov/mandelbrot-emerger](https://github.com/drasimov/mandelbrot-emerger) (p5.js) as an SDL3 desktop application.
 
-Most Mandelbrot viewers use a fixed `MAX_ITERATIONS` cap and lose integrity when zooming. This program has none: every pixel's point iterates `z = z^2 + c` once per pass, in lockstep, forever - you watch the set take shape in real time, and resolution grows for as long as you leave it running.
+Most Mandelbrot viewers use a fixed `MAX_ITERATIONS` cap and lose integrity when zooming. This program has none: every pixel's point iterates `z = z^2 + c` once per pass, in lockstep, forever - you watch the set take shape in real time, and resolution grows for as long as you leave it running. There is no precision floor either: viewport coordinates are kept in arbitrary-precision fixed point and pixels are integrated as perturbations of one high-precision reference orbit, so the camera can keep falling inward indefinitely.
 
 ## Controls
 
@@ -98,28 +98,30 @@ Requires the [Emscripten SDK](https://emscripten.org/docs/getting_started/downlo
 
 Linux / macOS:
 ```sh
-emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-web
+emcmake cmake -B build/web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/web
 python -m http.server 8000 -d build-web    # then open http://localhost:8000/
 ```
 
 Windows - cmd (with the emsdk environment active):
 ```bat
-emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-web
+emcmake cmake -B build\web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build\web
 python -m http.server 8000 -d build-web    :: then open http://localhost:8000/
 ```
 
 Windows - PowerShell:
 ```powershell
-emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-web
+emcmake cmake -B build/web -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/web
 python -m http.server 8000 -d build-web    # then open http://localhost:8000/
 ```
 
 If the `emsdk` tools are not yet on `PATH`, run `emsdk install latest`, `emsdk activate latest`, then `emsdk_env.bat` (cmd) or `.\emsdk_env.ps1` (PowerShell) from the emsdk folder first.
 
 The build enables pthreads (one worker per logical core) and emits `index.html`, `index.js` and `index.wasm`. Threads require a cross-origin-isolated page, so `coi-serviceworker.js` is copied next to the artifacts and injects the COOP/COEP headers on hosts that cannot set them (GitHub Pages, for example) with a single automatic reload. Hosts that do serve those headers (or serve over localhost) do not need it, but shipping it anyway is harmless. A plain-HTTP LAN address is not a secure context, so the service worker cannot register there - use localhost or HTTPS.
+
+The CMake build tree lives in `build/web`, and the artifacts are written straight into `build-web/`, so that directory is the complete static dist - `index.html`, `index.js`, `index.wasm` and `coi-serviceworker.js`, nothing else. Upload it as-is.
 
 ### Manual / any host
 
@@ -139,7 +141,7 @@ cmake --build build --config Release
 | Linux (glibc) | GCC / Clang | static SDL3, dynamic libc | glibc >= build host | single ELF |
 | Linux (musl) | `musl-gcc` | fully static | none | single ELF |
 | macOS | AppleClang | static SDL3, dynamic libSystem | OS-provided | single Mach-O |
-| Web (WASM) | Emscripten 4+ | SDL3 port, pthreads | none (static HTTP host) | `index.html` + `.js` + `.wasm` |
+| Web (WASM) | Emscripten 4+ | SDL3 port, pthreads | none (static HTTP host) | `build-web/` static dist |
 
 ## Implementation notes
 
@@ -148,11 +150,11 @@ cmake --build build --config Release
 - Row threads are pooled for the process lifetime instead of being spawned per pass, and the desktop prefers Direct3D 12, which keeps the streaming upload inside the 60fps budget (Direct3D 11 allocates a staging texture on every lock and misses it).
 - Pixels are written in the active scheme's own palette - the default is a bright amber-to-white ramp, `C` cycles through the others - with no renderer-side tinting, so the rendered frame, the browser and the saved PNG are byte-identical. Brightness falls off monotonically with the escape count relative to the passes since the last reframe, so the slowest escapers are always the brightest and every filament reads as a bright ridge against the dimmer field. The per-count value is a lookup table extended one entry per pass, and the palette is a precomputed 256-entry ramp, so a pixel costs a load and a multiply.
 - The browser build creates a high-density canvas, so the canvas backing store runs at the display's native pixel count instead of being upscaled by the browser, and pointer coordinates are converted into renderer pixels before hit-testing.
-- Iteration math uses IEEE doubles, exactly like JavaScript numbers, so point trajectories are bit-for-bit identical to the original.
-- The simulation writes straight into the locked streaming texture, so a frame never pays for an intermediate pixel copy, and it stores only each point's current `z` and its escape age: the seed `c` comes from per-row and per-column tables instead of a second full-frame array, which halves both the memory footprint and the per-pass memory traffic.
+- Zooming has no precision floor. The viewport lives in arbitrary-precision binary fixed point whose limb count grows with depth (about 96 bits of margin below the current span), the reference orbit - the view center, or a probe-chosen point near it - is iterated at that precision, and every pixel advances as a perturbation of it: `z = Z + w` with `w` in doubles, `w' = 2Zw + w^2 + dc`, and the magnitude test evaluated as `|Z|^2 - 4 + 2Z·w + |w|^2` so it never has to form the cancelling sum. When a pixel orbit passes near the critical point the delta is re-anchored to the orbit start (Zhuoran rebasing), which keeps deep orbits glitch-free. At shallow depths the arithmetic reduces to ordinary doubles, exactly like JavaScript numbers.
+- The simulation writes straight into the locked streaming texture, so a frame never pays for an intermediate pixel copy, and it stores only each point's current perturbation delta, reference index and escape age: pixel coordinates come from per-row and per-column offset tables instead of a second full-frame array, which keeps the memory footprint close to the original.
 - The pre-zoom frame an animation flies over is copied on the GPU into a render-target texture before the next iteration overwrites the streaming texture, because locking a streaming texture on the Direct3D backends hands back undefined staging memory.
 - Screenshots are written by a dependency-free PNG encoder (stored deflate blocks).
-- Autopilot probes 256 random plane points per hop, iterates each up to 512 times, and centers the next zoom on the slowest escaper - a proxy for filament proximity - so it endlessly follows branch structure. A hop only starts once the current view has had at least 600 passes, so the camera never pans away from a half-resolved frame, and when the view span approaches double-precision limits it restarts from full view, making generation truly infinite.
+- Autopilot probes 256 random plane points per hop, all evaluated through the high-precision reference orbit, and centers the next zoom on the slowest escaper inside the iteration budget - a proxy for filament proximity - so it endlessly follows branch structure at any depth. A full-horizon survivor (or, when none exists, the slowest escaper itself) becomes the next reference orbit, and the wait between hops is capped just below that reference point's own lifetime, so the perturbation stays valid while the camera keeps falling inward. A hop only starts once the current view has had enough passes to show its structure, and if a probe finds no slow escaper at all the camera pulls back, bounded by the full view.
 - Zooms glide instead of cutting: every target the captured frame contains - magnifying zooms and equal-span pans alike - presents an eased crop of the pre-zoom frame while the field silently resolves toward the destination, crossfading into fresh detail on arrival; only targets the frame cannot cover (zoom-outs, offset rectangles) cross through black instead. Exactly one reframe happens per zoom - before a dive, or at the black crossing of a cross-fade - so no simulation state is reset while imagery is visible, and autopilot windows are slid back inside the view so its zooms always glide.
 
 ## License
