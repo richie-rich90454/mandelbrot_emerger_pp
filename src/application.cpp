@@ -6,6 +6,9 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 namespace{
     const unsigned long long AUTO_ZOOM_INTERVAL_MS=6000ull;
     const int PROBE_SAMPLES=256;
@@ -47,7 +50,12 @@ Application::~Application(){
     }
 }
 bool Application::initialize(){
-    window=SDL_CreateWindow("Mandelbrot Emerger", windowWidth, windowHeight, SDL_WINDOW_FULLSCREEN|SDL_WINDOW_BORDERLESS);
+#ifdef __EMSCRIPTEN__
+    const SDL_WindowFlags windowFlags=SDL_WINDOW_RESIZABLE;
+#else
+    const SDL_WindowFlags windowFlags=SDL_WINDOW_FULLSCREEN|SDL_WINDOW_BORDERLESS;
+#endif
+    window=SDL_CreateWindow("Mandelbrot Emerger", windowWidth, windowHeight, windowFlags);
     if(window==nullptr){
         std::cerr<<"SDL_CreateWindow failed: "<<SDL_GetError()<<std::endl;
         return false;
@@ -58,12 +66,13 @@ bool Application::initialize(){
         return false;
     }
     SDL_SetRenderVSync(renderer, 1);
-    texture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
+    fullscreen=(SDL_GetWindowFlags(window)&SDL_WINDOW_FULLSCREEN)!=0;
+    texture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
     if(texture==nullptr){
         std::cerr<<"SDL_CreateTexture failed: "<<SDL_GetError()<<std::endl;
         return false;
     }
-    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
+    flightTexture=SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, bufferWidth, bufferHeight);
     if(flightTexture==nullptr){
         std::cerr<<"SDL_CreateTexture(flight) failed: "<<SDL_GetError()<<std::endl;
         return false;
@@ -76,11 +85,25 @@ void Application::run(){
     simulation.reframe(viewport);
     viewport.log(std::cout);
     std::cout<<"[auto] engaged (press A to toggle, click to take manual control)"<<std::endl;
+#ifdef __EMSCRIPTEN__
+    // one tick per animation frame; the loop ends through emscripten_cancel_main_loop in tick()
+    emscripten_set_main_loop_arg([](void* self){ static_cast<Application*>(self)->tick(); }, this, 0, 1);
+#else
     while(running){
-        processEvents();
-        render();
-        maybeAutoZoom();
+        tick();
     }
+#endif
+}
+void Application::tick(){
+    processEvents();
+#ifdef __EMSCRIPTEN__
+    if(!running){
+        emscripten_cancel_main_loop();
+        return;
+    }
+#endif
+    render();
+    maybeAutoZoom();
 }
 void Application::processEvents(){
     SDL_Event event;
@@ -434,6 +457,20 @@ void Application::saveScreenshot(){
     PngWriter writer;
     if(writer.save(screenshotPixels.data(), bufferWidth, bufferHeight, name)){
         std::cout<<"Saved "<<name<<std::endl;
+#ifdef __EMSCRIPTEN__
+        // the browser has no user-visible filesystem: hand the PNG now living in MEMFS to the page as a download
+        EM_ASM({
+            var bytes=FS.readFile(UTF8ToString($0));
+            var url=URL.createObjectURL(new Blob([bytes], {type: "image/png"}));
+            var link=document.createElement("a");
+            link.href=url;
+            link.download=UTF8ToString($0);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }, name);
+#endif
     }
     else{
         std::cerr<<"Failed to save "<<name<<std::endl;
