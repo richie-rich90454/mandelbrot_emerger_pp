@@ -12,7 +12,7 @@
 #endif
 namespace{
     const unsigned long long AUTO_ZOOM_INTERVAL_MS=6000ull;
-    const long long AUTO_ZOOM_MIN_PASSES=1200;
+    const long long AUTO_ZOOM_MIN_PASSES=600;
     const int PROBE_SAMPLES=256;
     const int PROBE_MAX_ITER=512;
     const int PROBE_MIN_TARGET_ITER=16;
@@ -60,7 +60,7 @@ namespace{
         return static_cast<int>(std::lround(static_cast<double>(cssHeight)*outputPixelRatio()*bufferScale(cssWidth, cssHeight)));
     }
 }
-Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),bufferWidth(bufferWidthFor(cssWidth, cssHeight)),bufferHeight(bufferHeightFor(cssWidth, cssHeight)),viewport(cssWidth, cssHeight),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(0),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
+Application::Application(int cssWidth, int cssHeight):window(nullptr),renderer(nullptr),texture(nullptr),flightTexture(nullptr),bufferWidth(bufferWidthFor(cssWidth, cssHeight)),bufferHeight(bufferHeightFor(cssWidth, cssHeight)),viewport(cssWidth, cssHeight),simulation(bufferWidth, bufferHeight),schemes{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},activeScheme(5),clicker(false),running(false),fullscreen(true),autoZoomEnabled(true),animating(false),flightCapturePending(false),screenshotRequested(false),animationMode(0),pendingApplied(false),lastReframeTicks(0),animationStartTicks(0),animFrom(ViewportBounds{0.0, 0.0, 0.0, 0.0}),pendingTarget(ViewportBounds{0.0, 0.0, 0.0, 0.0}),randomEngine(std::random_device{}()),windowWidth(cssWidth),windowHeight(cssHeight),dstX(0.0f),dstY(0.0f),dstW(0.0f),dstH(0.0f),scale(1.0f){
     viewport.setDeviceSize(bufferWidth, bufferHeight);
     schemes[0]=new GrayscaleScheme();
     schemes[1]=new ThermalScheme();
